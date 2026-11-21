@@ -105,8 +105,14 @@ def test_fire_only_when_aligned_and_ready(rules):
 
     cooling = _obs(blocked["aim"], cooldown=0.2)
     held = control.to_action(intent, cooling, None, 0.0)
-    assert held["fire"] == [False, False]
+    assert held["fire"] == [True, False]
     _check(held)
+
+    reloading = _obs(blocked["aim"], cooldown=0.0)
+    reloading["self"]["weapons"][0]["reload"] = 1.2
+    waiting = control.to_action(intent, reloading, None, 0.0)
+    assert waiting["fire"] == [False, False]
+    _check(waiting)
 
 
 def test_slow_move_stays_under_step_speed(rules):

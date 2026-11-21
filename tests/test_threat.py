@@ -123,18 +123,23 @@ def test_cubes_scale_damage_up_to_the_cap(rules):
 
 def test_finish_a_lone_low_hp_target(rules):
     me = _me()
-    target = _enemy(2, [20.0, 0.0, 0.0], hp=200.0)
+    target = _enemy(2, [20.0, 0.0, 0.0], hp=PARAMS["finish_hp"])
     fight, reason = should_fight(me, target, _World([target]), _zone(True), rules, PARAMS)
     assert fight is True
     assert reason == "finish"
 
 
 def test_low_hp_does_not_fight_two_full_enemies(rules):
-    me = _me(hp=0.30 * 1400.0)
     first = _enemy(2, [20.0, 0.0, 0.0])
     second = _enemy(3, [0.0, 20.0, 0.0])
-    fight, reason = should_fight(me, first, _World([first, second]), _zone(True), rules, PARAMS)
-    assert (fight, reason) == (False, "low_hp")
+    world = _World([first, second])
+    obs = _zone(True)
+    above = should_fight(_me(hp=0.30 * 1400.0), first, world, obs, rules, PARAMS)
+    assert above == (False, "losing")
+    floored = should_fight(
+        _me(hp=PARAMS["min_hp_frac_to_fight"] * 1400.0), first, world, obs, rules, PARAMS
+    )
+    assert floored == (False, "low_hp")
 
 
 def test_no_fight_without_line_of_sight(rules):
@@ -146,7 +151,7 @@ def test_no_fight_without_line_of_sight(rules):
 
 def test_zone_unsafe_blocks_a_winning_fight(rules):
     me = _me(in_zone=False)
-    target = _enemy(2, [20.0, 0.0, 0.0], hp=400.0)
+    target = _enemy(2, [20.0, 0.0, 0.0], hp=PARAMS["finish_hp"] + 100.0)
     fight, reason = should_fight(me, target, _World([target]), _zone(False), rules, PARAMS)
     assert (fight, reason) == (False, "zone")
 

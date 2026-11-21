@@ -4,15 +4,15 @@ Rules numbers (weapon damage, ranges, zone) are NOT here: read them from hello.c
 """
 PARAMS = {
     # --- fight / hide decision (threat.py) ---
-    "base_margin": 0.7,          # FIGHT if my_ttk < margin * their_ttk
-    "min_hp_frac_to_fight": 0.40,
+    "base_margin": 2.0,          # FIGHT if my_ttk < margin * their_ttk
+    "min_hp_frac_to_fight": 0.15,
     "zone_safe_s": 10.0,         # need this many seconds of zone safety to start a fight
     "threat_radius_m": 120.0,    # enemies within this count toward total incoming DPS
-    "mode_hold_s": 1.5,          # hysteresis: min time in a mode before switching
+    "mode_hold_s": 3.0,          # hysteresis: min time in a mode before switching
 
     # --- risk budget (v2) ---
     "reward_per_cube": 0.03,     # margin bonus per cube the kill would give (if under cap)
-    "finish_hp": 200.0,          # target HP under which we commit to finishing
+    "finish_hp": 400.0,          # target HP under which we commit to finishing
     "finish_burst_s": 1.5,
     "desperation_late": 0.4,     # margin bonus in the last zone phases
     "crowd_penalty_per_enemy": 0.25,
@@ -36,5 +36,14 @@ PARAMS = {
     "replan_every_s": 1.0,
 
     # --- upgrades (priority order; unknown ids fall to the end) ---
-    "upgrade_priority": ["armor", "sensors", "gun_rate"],
+    "upgrade_priority": [
+        "gun_rate",
+        "gun_damage",
+        "laser_damage",
+        "lightning_efficiency",
+        "mortar_reload",
+        "laser_charge",
+        "armor",
+        "sensors",
+    ],
 }

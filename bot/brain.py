@@ -1,10 +1,11 @@
 """Top-level decision loop: state machine over modes with hysteresis.
 
 Priority each tick (first match wins, subject to mode_hold_s except ZONE and
-critical HP under fire):
+hp under the fight floor while under fire):
   1. ZONE       - out of the zone, or the safe circle will reach us before we do
-  2. FIGHT      - threat.should_fight says yes
-  3. DISENGAGE  - took damage in the last 3 s, or a hostile is visible within 120 m
+  2. DISENGAGE  - hp below min_hp_frac_to_fight AND at least two hostiles inside
+                  threat_radius
+  3. FIGHT      - anyone else we can see, remember, or who just shot us
   4. HIDE       - default: cover inside the next circle, silent, scan
 
 DROP and LOOT are not in v1; those modules return None.
@@ -15,6 +16,7 @@ from __future__ import annotations
 import math
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from bot import upgrades
@@ -35,7 +37,6 @@ _MODES = {
     "HIDE": hide.run,
 }
 _WEAPON_SOUNDS = {"gun", "mortar", "laser", "lightning", "laser_charge", "explosion", "npc_gun", "death"}
-_CRITICAL_HP = 0.25
 _DAMAGE_WINDOW_S = 3.0
 _HOSTILE_RANGE_M = 120.0
 _ZONE_MARGIN_M = 10.0
@@ -151,24 +152,59 @@ class Brain:
         self.fight_reason = ""
         if self._zone_urgent(obs):
             return "ZONE"
-        target = pick_target(obs["self"], self.world, self.rules, self.params)
-        if target is not None:
-            fight, reason = should_fight(obs["self"], target, self.world, obs, self.rules, self.params)
-            if fight:
-                self.target = target
-                self.fight_reason = reason
-                return "FIGHT"
-        if self._pressed(obs):
+        if self._outnumbered(obs):
             return "DISENGAGE"
+        target = pick_target(obs["self"], self.world, self.rules, self.params)
+        reason = "press"
+        if target is not None:
+            _fight, reason = should_fight(obs["self"], target, self.world, obs, self.rules, self.params)
+            if reason in ("low_hp", "losing", "zone", "no_los", "no_target"):
+                reason = "press"
+        else:
+            target = self._fallback_target(obs)
+        if target is not None:
+            self.target = target
+            self.fight_reason = reason
+            return "FIGHT"
         return "HIDE"
+
+    def _outnumbered(self, obs: dict[str, Any]) -> bool:
+        """Retreat only below the fight floor and only against two or more nearby hostiles."""
+        floor = float(self.params["min_hp_frac_to_fight"])
+        if self._hp_frac(obs) >= floor:
+            return False
+        return len(self.world.enemies(float(self.params["threat_radius_m"]))) >= 2
+
+    def _fallback_target(self, obs: dict[str, Any]) -> Any:
+        """A remembered mech, or a point along the latest damage bearing."""
+        radius = float(self.params["threat_radius_m"])
+        known = self.world.enemies(radius)
+        if known:
+            px, py = _xy(obs["self"]["pos"])
+            return min(known, key=lambda enemy: _dist(px, py, enemy.pos[0], enemy.pos[1]))
+        if self._damage_age(obs) > _DAMAGE_WINDOW_S:
+            return None
+        bearing = self.threat_bearing()
+        if bearing is None:
+            return None
+        px, py, pz = (float(v) for v in obs["self"]["pos"][:3])
+        return SimpleNamespace(
+            id=None,
+            pos=(px + math.cos(bearing) * 50.0, py + math.sin(bearing) * 50.0, pz),
+            vel=(0.0, 0.0, 0.0),
+        )
+
+    def _hp_frac(self, obs: dict[str, Any]) -> float:
+        me = obs["self"]
+        max_hp = float(me.get("max_hp") or 0.0)
+        if max_hp <= 0.0:
+            return 1.0
+        return float(me.get("hp") or 0.0) / max_hp
 
     def _switch_now(self, candidate: str, obs: dict[str, Any], now: float) -> bool:
         if candidate == "ZONE":
             return True
-        me = obs["self"]
-        max_hp = float(me.get("max_hp") or 0.0)
-        frac = float(me.get("hp") or 0.0) / max_hp if max_hp else 1.0
-        if frac < _CRITICAL_HP and self._under_fire(obs):
+        if self._hp_frac(obs) < float(self.params["min_hp_frac_to_fight"]) and self._under_fire(obs):
             return True
         return now - self.mode_since >= float(self.params["mode_hold_s"])
 

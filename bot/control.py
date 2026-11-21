@@ -242,16 +242,13 @@ class Controller:
             return slots
         actual = me.get("aim") or [0.0, 0.0]
         error = _aim_error((float(actual[0]), float(actual[1])), desired)
-        tolerance = max(0.03, math.atan(2.5 / dist)) if math.isfinite(dist) and dist > 1e-6 else 0.03
-        aligned = error < tolerance
+        aligned = error < _aim_tolerance(dist)
         weapons = me.get("weapons") or [None, None]
         for index in range(2):
             if index >= len(want) or not want[index]:
                 continue
             weapon = weapons[index] if index < len(weapons) else None
             if not isinstance(weapon, dict):
-                continue
-            if float(weapon.get("cooldown") or 0.0) > 0.0:
                 continue
             kind = str(weapon.get("kind") or "")
             if not aligned and kind != "laser":
@@ -279,10 +276,11 @@ class Controller:
             return False
         if kind == "lightning":
             return self._in_cone(me, desired, dist)
-        if kind == "gun":
-            ammo = weapon.get("ammo")
-            if ammo is not None and float(ammo) <= 0.0:
-                return False
+        ammo = weapon.get("ammo")
+        if ammo is not None and float(ammo) <= 0.0:
+            return False
+        if float(weapon.get("reload") or 0.0) > 0.0:
+            return False
         return True
 
     def _laser_trigger(self, weapon: dict[str, Any], me: dict[str, Any], desired: tuple[float, float], dist: float) -> bool:
@@ -308,8 +306,7 @@ class Controller:
     def _on_target(self, me: dict[str, Any], desired: tuple[float, float], dist: float) -> bool:
         actual = me.get("aim") or [0.0, 0.0]
         error = _aim_error((float(actual[0]), float(actual[1])), desired)
-        tolerance = max(0.03, math.atan(2.5 / dist)) if math.isfinite(dist) and dist > 1e-6 else 0.03
-        return error < tolerance
+        return error < _aim_tolerance(dist)
 
     def _reload(self, intent: Intent, me: dict[str, Any]) -> bool:
         if intent.aim_target is not None or intent.aim_yaw_pitch is not None:
@@ -469,3 +466,10 @@ def _wrap(angle: float) -> float:
 
 def _aim_error(actual: tuple[float, float], desired: tuple[float, float]) -> float:
     return math.hypot(_wrap(desired[0] - actual[0]), desired[1] - actual[1])
+
+
+def _aim_tolerance(dist: float) -> float:
+    """Hold the trigger inside this aim error. The server fires on its own cooldown."""
+    if not math.isfinite(dist) or dist <= 1e-6:
+        return 0.03
+    return max(0.03, math.atan(3.5 / dist) + 0.01)

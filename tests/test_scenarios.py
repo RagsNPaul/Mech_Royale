@@ -102,7 +102,7 @@ def test_low_hp_against_two_enemies_retreats_while_facing_one(hello):
     second = _actor(6, [origin[0] + 70.0, origin[1] + 8.0, origin[2]], 1400)
     obs = make_obs(
         at_time(20.0),
-        with_self(hp=0.30 * 1400.0, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+        with_self(hp=0.14 * 1400.0, pos=origin, in_zone=True, aim=[0.0, 0.0]),
         _safe_zone(origin),
         mechs=[first, second],
         events=[],
@@ -118,6 +118,23 @@ def test_low_hp_against_two_enemies_retreats_while_facing_one(hello):
     assert min(errors) < 0.45
     away = (origin[0] - first["pos"][0], origin[1] - first["pos"][1])
     assert act["move"][0] * away[0] + act["move"][1] * away[1] > 0.0
+
+
+def test_two_enemies_above_the_floor_stay_in_the_fight(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    first = _actor(5, [origin[0] + 40.0, origin[1], origin[2]], 1400)
+    second = _actor(6, [origin[0] + 70.0, origin[1] + 8.0, origin[2]], 1400)
+    obs = make_obs(
+        at_time(20.0),
+        with_self(hp=0.30 * 1400.0, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+        _safe_zone(origin),
+        mechs=[first, second],
+        events=[],
+        sounds=[],
+    )
+    brain.act(obs, time.perf_counter())
+    assert brain.mode == "FIGHT"
 
 
 def test_rear_damage_is_not_hide_and_aim_turns_toward_it(hello):
@@ -180,7 +197,8 @@ def test_modes_do_not_flip_flop(hello):
     enemy_pos = _los_point(brain, origin, 50.0)
     previous = brain.mode
     switches = 0
-    for step in range(10):
+    # 2.9 s of alternation sits inside the 3 s hold.
+    for step in range(29):
         t = 10.0 + step * 0.1
         mechs = [_actor(5, enemy_pos, 150)] if step % 2 == 0 else []
         obs = make_obs(
