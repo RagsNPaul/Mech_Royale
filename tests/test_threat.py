@@ -130,11 +130,16 @@ def test_finish_a_lone_low_hp_target(rules):
 
 
 def test_low_hp_does_not_fight_two_full_enemies(rules):
-    me = _me(hp=0.30 * 1400.0)
     first = _enemy(2, [20.0, 0.0, 0.0])
     second = _enemy(3, [0.0, 20.0, 0.0])
-    fight, reason = should_fight(me, first, _World([first, second]), _zone(True), rules, PARAMS)
-    assert (fight, reason) == (False, "low_hp")
+    world = _World([first, second])
+    obs = _zone(True)
+    # 30% is above the 0.25 floor, so this 2v1 is refused as a losing trade.
+    above = should_fight(_me(hp=0.30 * 1400.0), first, world, obs, rules, PARAMS)
+    assert above == (False, "losing")
+    # At the floor the same fight is refused before the trade is considered.
+    floored = should_fight(_me(hp=PARAMS["min_hp_frac_to_fight"] * 1400.0), first, world, obs, rules, PARAMS)
+    assert floored == (False, "low_hp")
 
 
 def test_no_fight_without_line_of_sight(rules):

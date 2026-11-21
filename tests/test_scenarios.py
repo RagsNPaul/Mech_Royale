@@ -102,7 +102,7 @@ def test_low_hp_against_two_enemies_retreats_while_facing_one(hello):
     second = _actor(6, [origin[0] + 70.0, origin[1] + 8.0, origin[2]], 1400)
     obs = make_obs(
         at_time(20.0),
-        with_self(hp=0.30 * 1400.0, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+        with_self(hp=0.25 * 1400.0, pos=origin, in_zone=True, aim=[0.0, 0.0]),
         _safe_zone(origin),
         mechs=[first, second],
         events=[],
@@ -180,7 +180,8 @@ def test_modes_do_not_flip_flop(hello):
     enemy_pos = _los_point(brain, origin, 50.0)
     previous = brain.mode
     switches = 0
-    for step in range(10):
+    # Alternate for 2.4 s: inside the 2.5 s hold, past the old 1.5 s hold.
+    for step in range(24):
         t = 10.0 + step * 0.1
         mechs = [_actor(5, enemy_pos, 150)] if step % 2 == 0 else []
         obs = make_obs(
@@ -227,7 +228,7 @@ def test_missing_map_never_raises(monkeypatch, hello):
         ),
         make_obs(
             at_time(20.0),
-            with_self(hp=420, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+            with_self(hp=0.25 * 1400.0, pos=origin, in_zone=True, aim=[0.0, 0.0]),
             _safe_zone(origin),
             mechs=[enemy, _actor(6, [70.0, 5.0, 0.0], 1400)],
             events=[],
@@ -244,3 +245,77 @@ def test_missing_map_never_raises(monkeypatch, hello):
     ]
     for obs in scenarios:
         brain.act(obs, time.perf_counter())
+
+
+def test_enemy_in_line_of_sight_is_never_hide(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    quiet = make_obs(
+        at_time(20.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+        _safe_zone(origin),
+        mechs=[],
+        events=[],
+        sounds=[],
+    )
+    brain.act(quiet, time.perf_counter())
+    assert brain.mode == "HIDE"
+    enemy_pos = _los_point(brain, origin, 50.0)
+    exposed = make_obs(
+        at_time(20.2),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+        _safe_zone(origin),
+        mechs=[_actor(5, enemy_pos, 1400)],
+        events=[],
+        sounds=[],
+    )
+    brain.act(exposed, time.perf_counter())
+    assert brain.mode != "HIDE"
+
+
+def test_lone_enemy_stays_a_fight_after_damage(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy_pos = _los_point(brain, origin, 80.0)
+    enemy = _actor(5, enemy_pos, 1400)
+    obs = make_obs(
+        at_time(20.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+        _safe_zone(origin),
+        mechs=[enemy],
+        events=[],
+        sounds=[],
+    )
+    brain.act(obs, time.perf_counter())
+    assert brain.mode == "FIGHT"
+    obs["self"]["hp"] = 1100
+    obs["t"] = 23.0
+    obs["tick"] = int(round(obs["t"] * 20))
+    obs["events"] = [
+        {"type": "damaged", "amount": 300, "weapon": "gun", "bearing": 0.4, "by": 5, "rear": False}
+    ]
+    brain.act(obs, time.perf_counter())
+    assert brain.mode == "FIGHT"
+
+
+def test_disengage_reengages_after_healing(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    wounded = _actor(5, [origin[0] + 40.0, origin[1], origin[2]], 800)
+    healthy = _actor(6, [origin[0] + 70.0, origin[1] + 8.0, origin[2]], 1400)
+    obs = make_obs(
+        at_time(20.0),
+        with_self(hp=0.20 * 1400.0, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+        _safe_zone(origin),
+        mechs=[wounded, healthy],
+        events=[],
+        sounds=[],
+    )
+    brain.act(obs, time.perf_counter())
+    assert brain.mode == "DISENGAGE"
+    obs["self"]["hp"] = 0.80 * 1400.0
+    obs["t"] = 20.3
+    obs["tick"] = int(round(obs["t"] * 20))
+    brain.act(obs, time.perf_counter())
+    assert brain.mode == "FIGHT"
+    assert brain.target is not None and brain.target.id == wounded["id"]
