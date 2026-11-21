@@ -4,11 +4,11 @@ Rules numbers (weapon damage, ranges, zone) are NOT here: read them from hello.c
 """
 PARAMS = {
     # --- fight / hide decision (threat.py) ---
-    "base_margin": 1.3,          # FIGHT if my_ttk < margin * their_ttk
-    "min_hp_frac_to_fight": 0.25,
+    "base_margin": 0.7,          # FIGHT if my_ttk < margin * their_ttk
+    "min_hp_frac_to_fight": 0.40,
     "zone_safe_s": 10.0,         # need this many seconds of zone safety to start a fight
     "threat_radius_m": 120.0,    # enemies within this count toward total incoming DPS
-    "mode_hold_s": 2.5,          # hysteresis: min time in a mode before switching
+    "mode_hold_s": 1.5,          # hysteresis: min time in a mode before switching
 
     # --- risk budget (v2) ---
     "reward_per_cube": 0.03,     # margin bonus per cube the kill would give (if under cap)

@@ -1,17 +1,12 @@
 """Top-level decision loop: state machine over modes with hysteresis.
 
-Priority each tick (first match wins, subject to mode_hold_s except ZONE,
-critical HP under fire, a squad HIDE that is in line of sight, and a squad
-re-engage):
+Priority each tick (first match wins, subject to mode_hold_s except ZONE and
+critical HP under fire):
   1. ZONE       - out of the zone, or the safe circle will reach us before we do
-  2. FIGHT      - squad lone-hunter commit, squad re-engage, or threat.should_fight
-  3. DISENGAGE  - took damage in the last 3 s, a hostile is visible within 120 m,
-                  or (squad) any visible enemy has line of sight
+  2. FIGHT      - threat.should_fight says yes
+  3. DISENGAGE  - took damage in the last 3 s, or a hostile is visible within 120 m
   4. HIDE       - default: cover inside the next circle, silent, scan
 
-Squad (world.ffa is false) never hides in an enemy's line of sight. One known
-hostile within 150 m is fought while hp stays at or above 25%, and a retreat
-comes back at 75% hp or once that enemy loses line of sight.
 DROP and LOOT are not in v1; those modules return None.
 """
 
@@ -29,7 +24,7 @@ from bot.mapdata import load as load_map
 from bot.modes import disengage, fight, hide, zone
 from bot.nav import Navigator, astar, best_cover, time_to_reach
 from bot.params import PARAMS
-from bot.threat import _has_los, pick_target, should_fight, zone_safe_s
+from bot.threat import pick_target, should_fight, zone_safe_s
 from bot.world import WorldModel
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -41,9 +36,6 @@ _MODES = {
 }
 _WEAPON_SOUNDS = {"gun", "mortar", "laser", "lightning", "laser_charge", "explosion", "npc_gun", "death"}
 _CRITICAL_HP = 0.25
-_HUNT_HP = 0.30
-_HEAL_HP = 0.75
-_HUNT_RANGE_M = 150.0
 _DAMAGE_WINDOW_S = 3.0
 _HOSTILE_RANGE_M = 120.0
 _ZONE_MARGIN_M = 10.0
@@ -132,9 +124,6 @@ class Brain:
         self._offer: int | None = None
         self._cover: tuple[float, float] | None = None
         self._cover_key: tuple[Any, ...] | None = None
-        self._hunt = False
-        self._seen_los = False
-        self._peek: tuple[float, float] | None = None
 
     def act(self, obs: dict[str, Any], t0: float) -> dict[str, Any]:
         """One decision. Returns a protocol action; tick is also set by main.py."""
@@ -146,12 +135,8 @@ class Brain:
         now = float(obs.get("t") or 0.0)
         candidate = self._candidate(obs)
         if candidate != self.mode and self._switch_now(candidate, obs, now):
-            if candidate == "DISENGAGE":
-                self._seen_los = False
             self.mode = candidate
             self.mode_since = now
-        if self.mode == "DISENGAGE" and self._visible_los(obs):
-            self._seen_los = True
         intent = _MODES[self.mode](self, obs)
         if not isinstance(intent, Intent):
             intent = Intent(slow=True, reason="idle")
@@ -166,18 +151,6 @@ class Brain:
         self.fight_reason = ""
         if self._zone_urgent(obs):
             return "ZONE"
-        if not self.world.ffa and self.mode != "DISENGAGE":
-            hunted = self._hunt_target(obs)
-            if hunted is not None:
-                self.target = hunted
-                self.fight_reason = "hunt"
-                return "FIGHT"
-        if not self.world.ffa and self._reengage(obs):
-            target = self._most_damaged()
-            if target is not None:
-                self.target = target
-                self.fight_reason = "reengage"
-                return "FIGHT"
         target = pick_target(obs["self"], self.world, self.rules, self.params)
         if target is not None:
             fight, reason = should_fight(obs["self"], target, self.world, obs, self.rules, self.params)
@@ -185,16 +158,12 @@ class Brain:
                 self.target = target
                 self.fight_reason = reason
                 return "FIGHT"
-        if self._pressed(obs) or (not self.world.ffa and self._visible_los(obs)):
+        if self._pressed(obs):
             return "DISENGAGE"
         return "HIDE"
 
     def _switch_now(self, candidate: str, obs: dict[str, Any], now: float) -> bool:
         if candidate == "ZONE":
-            return True
-        if not self.world.ffa and self.mode == "HIDE" and self._visible_los(obs):
-            return True
-        if candidate == "FIGHT" and self.fight_reason == "reengage":
             return True
         me = obs["self"]
         max_hp = float(me.get("max_hp") or 0.0)
@@ -202,44 +171,6 @@ class Brain:
         if frac < _CRITICAL_HP and self._under_fire(obs):
             return True
         return now - self.mode_since >= float(self.params["mode_hold_s"])
-
-    def _hunt_target(self, obs: dict[str, Any]) -> Any:
-        """The single known hostile, once hp has been above 30% and is still at least 25%."""
-        known = self.world.enemies(_HUNT_RANGE_M)
-        frac = self._hp_frac(obs)
-        if len(known) != 1 or frac < _CRITICAL_HP:
-            self._hunt = False
-            return None
-        if frac > _HUNT_HP:
-            self._hunt = True
-        if not self._hunt:
-            return None
-        return known[0]
-
-    def _reengage(self, obs: dict[str, Any]) -> bool:
-        """Peek back in after a squad retreat once we have healed or the enemy lost us."""
-        if self.world.ffa or self.mode != "DISENGAGE" or not self.world.enemies():
-            return False
-        if self._hp_frac(obs) >= _HEAL_HP:
-            return True
-        return self._seen_los and not self._visible_los(obs)
-
-    def _most_damaged(self) -> Any:
-        known = self.world.enemies()
-        if not known:
-            return None
-        return min(known, key=lambda enemy: (math.inf if enemy.hp is None else enemy.hp, enemy.id))
-
-    def _visible_los(self, obs: dict[str, Any]) -> bool:
-        me = obs["self"]
-        return any(_has_los(me, enemy, self.world, self.rules) for enemy in self.world.visible_enemies())
-
-    def _hp_frac(self, obs: dict[str, Any]) -> float:
-        me = obs["self"]
-        max_hp = float(me.get("max_hp") or 0.0)
-        if max_hp <= 0.0:
-            return 1.0
-        return float(me.get("hp") or 0.0) / max_hp
 
     def _zone_urgent(self, obs: dict[str, Any]) -> bool:
         me = obs["self"]
