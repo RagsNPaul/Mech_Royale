@@ -685,15 +685,20 @@ def best_cover(
     zone_next_center: Any,
     zone_next_radius: float,
     max_dist: float,
+    edge_margin: float | None = None,
+    min_dirs: int = 0,
 ) -> tuple[float, float] | None:
-    """Cover inside the next circle, 15 m in from the edge, shielding every threat.
+    """Cover inside the next circle. The shortest walk within max_dist wins.
 
-    Among those points the shortest walk within max_dist wins. None if nothing qualifies.
+    The default keeps 15 m of margin and requires every threat to be shielded.
+    ``edge_margin`` and ``min_dirs`` (walls blocking that many of 8 directions)
+    are the farmer's hold spot.
     """
     covers = mapdata.cover_points
     if covers.size == 0 or max_dist <= 0.0:
         return None
-    limit = float(zone_next_radius) - ZONE_MARGIN_M
+    margin = ZONE_MARGIN_M if edge_margin is None else float(edge_margin)
+    limit = float(zone_next_radius) - margin
     if limit < 0.0:
         return None
     cx = covers[:, 0].astype(np.float64)
@@ -704,6 +709,8 @@ def best_cover(
         (cx - mx) ** 2 + (cy - my) ** 2 <= max_dist * max_dist
     )
     shields = mapdata.cover_shield
+    if int(min_dirs) > 0:
+        ok &= shields.sum(axis=1) >= int(min_dirs)
     for threat in threat_xys:
         dx = float(threat[0]) - cx
         dy = float(threat[1]) - cy

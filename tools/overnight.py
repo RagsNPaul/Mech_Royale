@@ -28,7 +28,11 @@ if str(_ROOT) not in sys.path:
 from bot.params import PARAMS  # noqa: E402
 from tools.analyze_runs import analyze  # noqa: E402
 
-_CSV_FIELDS = ("time", "candidate", "round", "slot", "attempt", "counted", "place", "score", "match", "params")
+_CSV_FIELDS = (
+    "time", "candidate", "round", "slot", "attempt", "counted",
+    "place", "kills", "score", "match", "params",
+)
+_DEFAULT_CANDIDATES = 8
 
 
 def unread_keys(keys, root: Path | None = None) -> list[str]:
@@ -82,8 +86,43 @@ def sample_candidates(space: dict, defaults: dict, k: int, rng: random.Random) -
         found.append(cand)
     out = []
     for i, params in enumerate(found):
-        out.append({"id": "baseline" if i == 0 else f"c{i:02d}", "params": params, "scores": [], "matches": []})
+        out.append({
+            "id": "baseline" if i == 0 else f"c{i:02d}",
+            "params": params,
+            "scores": [],
+            "places": [],
+            "kills": [],
+            "matches": [],
+        })
     return out
+
+
+def match_points(place: int, kills: int) -> float:
+    """One kill outranks any placement. Placement only splits matches with the same kills."""
+    return int(kills) + (16 - int(place)) / 15.0
+
+
+def _scored(result):
+    if not isinstance(result, dict):
+        return None
+    try:
+        place = int(result["place"])
+        kills = int(result["kills"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return place, kills, match_points(place, kills)
+
+
+def _end_result(path: Path) -> dict | None:
+    if not path.is_file():
+        print("overnight: no end.json", file=sys.stderr)
+        return None
+    try:
+        end = json.loads(path.read_text(encoding="utf-8"))
+        return {"place": int(end["place"]), "kills": int(end["kills"])}
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        print("overnight: end.json has no place or kills", file=sys.stderr)
+        return None
 
 
 def _mean_se(scores: list[float]) -> tuple[float, float, int]:
@@ -133,11 +172,17 @@ def _fmt(value: float) -> str:
 def render_report(cands: list[dict]) -> str:
     ranked = sorted(cands, key=_rank)
     lines = ["# Overnight", ""]
-    lines.append("| candidate | mean | std err | n |")
-    lines.append("| --- | --- | --- | --- |")
+    lines.append("Score is kills + (16 - place) / 15.")
+    lines.append("")
+    lines.append("| candidate | mean | std err | n | place | kills |")
+    lines.append("| --- | --- | --- | --- | --- | --- |")
     for cand in ranked:
         mean, se, n = _mean_se(cand["scores"])
-        lines.append(f"| {cand['id']} | {_fmt(mean)} | {_fmt(se)} | {n} |")
+        place, _, _ = _mean_se([float(v) for v in cand.get("places") or []])
+        kills, _, _ = _mean_se([float(v) for v in cand.get("kills") or []])
+        lines.append(
+            f"| {cand['id']} | {_fmt(mean)} | {_fmt(se)} | {n} | {_fmt(place)} | {_fmt(kills)} |"
+        )
     best = next((cand for cand in ranked if cand["scores"]), None)
     lines.append("")
     lines.append("## best params")
@@ -216,38 +261,43 @@ class Search:
         self._gap = True
         dest = self.csv_path.parent / "data" / cand["id"] / round_name / f"s{slot}a{attempt}"
         try:
-            place = self.play(cand, dest)
+            result = self.play(cand, dest)
         except Exception as exc:
             print(f"overnight: {cand['id']} relay error: {exc}", file=sys.stderr)
-            place = None
+            result = None
         match = dest / "1"
         stamp = self.now().isoformat(timespec="seconds")
         params = json.dumps(cand["params"], sort_keys=True)
-        if place is None:
+        scored = _scored(result)
+        if scored is None:
             gzip_replay(match)
             _append_csv(self.csv_path, {
                 "time": stamp, "candidate": cand["id"], "round": round_name, "slot": slot,
-                "attempt": attempt, "counted": 0, "place": "", "score": "", "match": str(match), "params": params,
+                "attempt": attempt, "counted": 0, "place": "", "kills": "", "score": "",
+                "match": str(match), "params": params,
             })
             _write_report(self.report_path, self.cands)
             print(f"overnight: {cand['id']} {round_name} slot {slot} attempt {attempt} not counted", file=sys.stderr)
             return None
-        place = int(place)
-        score = 16 - place
-        cand["scores"].append(score)
-        cand["matches"].append(match)
+        place, kills, score = scored
+        cand.setdefault("scores", []).append(score)
+        cand.setdefault("places", []).append(place)
+        cand.setdefault("kills", []).append(kills)
+        cand.setdefault("matches", []).append(match)
         _append_csv(self.csv_path, {
             "time": stamp, "candidate": cand["id"], "round": round_name, "slot": slot,
-            "attempt": attempt, "counted": 1, "place": place, "score": score, "match": str(match), "params": params,
+            "attempt": attempt, "counted": 1, "place": place, "kills": kills, "score": score,
+            "match": str(match), "params": params,
         })
         _write_report(self.report_path, self.cands)
         gzip_replay(match)
-        print(f"overnight: {cand['id']} place {place} score {score}", file=sys.stderr)
-        return place
+        print(f"overnight: {cand['id']} place {place} kills {kills} score {score:.2f}", file=sys.stderr)
+        return scored
 
     def _slots(self, cands, slots, round_name) -> bool:
-        for cand in cands:
-            for slot in range(slots):
+        """One pass over every candidate, then the next pass. Same mix of rooms for each."""
+        for slot in range(slots):
+            for cand in cands:
                 first = self._connect(cand, round_name, slot, 1)
                 if first == "stop":
                     return False
@@ -311,12 +361,7 @@ def _relay(room: int):
         if not end_path.is_file():
             print("overnight: no end.json", file=sys.stderr)
             return None
-        try:
-            end = json.loads(end_path.read_text(encoding="utf-8"))
-            return int(end["place"])
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-            print("overnight: end.json has no place", file=sys.stderr)
-            return None
+        return _end_result(end_path)
 
     return play
 
@@ -326,6 +371,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--until", default="07:00", help="local HH:MM to stop (default 07:00)")
     parser.add_argument("--room", type=int, default=3)
     parser.add_argument("--sleep", type=float, default=30, help="seconds between disconnect and reconnect")
+    parser.add_argument("--candidates", type=int, default=_DEFAULT_CANDIDATES, help="overlays to sample (default 8)")
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--out", default="runs")
     parser.add_argument("--space", type=Path, default=_ROOT / "tools" / "search_space.json")
@@ -333,7 +379,7 @@ def main(argv: list[str] | None = None) -> None:
     space = _load_space(args.space)
     defaults = {key: PARAMS[key] for key in space if key in PARAMS}
     rng = random.Random(args.seed)
-    cands = sample_candidates(space, defaults, 12, rng)
+    cands = sample_candidates(space, defaults, args.candidates, rng)
     out = Path(args.out)
     if not out.is_absolute():
         out = _ROOT / out

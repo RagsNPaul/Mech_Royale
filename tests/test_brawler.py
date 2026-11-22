@@ -3,11 +3,18 @@
 import math
 import time
 
+import pytest
+
 from bot.brain import Brain
 from bot.params import PARAMS
 from tests.fixtures import at_time, make_obs, with_self, with_zone
 from tests.test_replay import _validator
 from tests.test_scenarios import _actor, _los_point, _origin, _quiet, _safe_zone
+
+
+@pytest.fixture(autouse=True)
+def _brawler_strategy(monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "brawler")
 
 
 def test_brawler_replay_is_fast_and_schema_valid(hello, observations, monkeypatch):

@@ -12,7 +12,7 @@ from tests.fixtures import at_time, make_obs, with_self, with_zone
 
 @pytest.fixture(autouse=True)
 def _state_machine(monkeypatch):
-    """These tests cover the mode loop. The shipped strategy is the brawler."""
+    """These tests cover the mode loop. The shipped strategy is the farmer."""
     monkeypatch.setitem(PARAMS, "strategy", "brain")
 
 

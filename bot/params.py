@@ -40,7 +40,7 @@ PARAMS = {
     "replan_every_s": 1.0,
 
     # --- which decision loop Brain.act runs ---
-    "strategy": "brawler",
+    "strategy": "farmer",
 
     # --- brawler (bot/strategies/brawler.py) ---
     "standoff_lightning_m": 20.0,  # hold this far once lightning is equipped
