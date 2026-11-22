@@ -43,8 +43,8 @@ PARAMS = {
     "strategy": "brawler",
 
     # --- brawler (bot/strategies/brawler.py) ---
-    "standoff_lightning_m": 80.0,  # hold this far once lightning is equipped
-    "standoff_gun_m": 80.0,        # hold this far with guns only
+    "standoff_lightning_m": 120.0,  # hold this far once lightning is equipped
+    "standoff_gun_m": 120.0,        # hold this far with guns only
     "cube_detour_m": 80.0,          # walk this far for a cube when nobody is close
     "heal_hp_frac": 0.0,            # under this fraction, detour for cubes even in a fight
 
