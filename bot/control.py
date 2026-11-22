@@ -146,10 +146,12 @@ class Controller:
         fire = self._fire(intent, me, desired, dist)
         jump = steered_jump if intent.jump is None else bool(intent.jump)
         boost = False if intent.slow else bool(intent.boost)
-        if (intent.mode or "").upper() == "FIGHT":
-            energy = me.get("energy")
-            if energy is not None and float(energy) < 30.0:
-                boost = False
+        mode = (intent.mode or "").upper()
+        energy = me.get("energy")
+        if mode == "FIGHT" and energy is not None and float(energy) < 30.0:
+            boost = False
+        if mode == "BRAWL" and intent.reason == "rush" and energy is not None and float(energy) < 25.0:
+            boost = False
         action: dict[str, Any] = {
             "tick": obs["tick"],
             "move": [float(move[0]), float(move[1])],
@@ -275,7 +277,7 @@ class Controller:
             return self._laser_trigger(weapon, me, desired, dist)
         if kind == "lightning":
             energy = me.get("energy")
-            if energy is not None and float(energy) < 10.0:
+            if energy is not None and float(energy) < 8.0:
                 return False
             return self._in_cone(me, desired, dist)
         if not aligned:

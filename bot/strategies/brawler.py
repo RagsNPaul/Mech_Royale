@@ -1,36 +1,44 @@
-"""Rush the nearest enemy. No hiding and no retreat.
+"""Rush a clustered enemy. Lightning in slot 1 comes before a distant fight.
 
-Pathfinding is used only when the straight line is blocked. The first 30 s are
-for the nearest weapon inside 60 m. After that, and when no weapon is waiting,
-the nearest known mech is the target.
+Pathfinding is used only when the straight line is blocked. Until slot 1 holds
+lightning, the nearest lightning pickup inside 150 m is the goal. Crates inside
+40 m are shot on the way, and an enemy is fought only when it is inside 40 m.
 """
 
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 from bot.control import Intent
 from bot.threat import zone_safe_s
 
-_RANK = {"lightning": 0, "laser": 1, "mortar": 2}
-_LOOT_S = 30.0
-_LOOT_M = 60.0
 _ZONE_S = 8.0
-_LIGHTNING_M = 25.0
+_LIGHTNING_M = 20.0
 _GUN_M = 45.0
 _RING_M = 15.0
+_HUNT_M = 150.0
+_CRATE_M = 40.0
+_FIGHT_ON_WAY_M = 40.0
+_CHAIN_M = 14.0
+_HOLD_M = 2.0
+_LIGHTNING_ENERGY = 8.0
+_BOOST_ENERGY = 25.0
 
 
 def run(brain, obs) -> Intent:
     me = obs["self"]
     now = float(obs.get("t") or 0.0)
-    target = _nearest(brain, me)
+    target = _chain_target(brain)
     if _zone_soon(me, obs):
         return _zone(brain, obs, me, target)
-    if now < _LOOT_S:
-        pickup = _weapon(obs, me)
+    if not _slot1_lightning(me):
+        close = _within(brain, me, _FIGHT_ON_WAY_M)
+        if close is not None:
+            return _rush(brain, obs, me, close, now)
+        pickup = _lightning(obs, me)
         if pickup is not None:
-            return _take(brain, obs, me, pickup, target)
+            return _hunt(brain, obs, me, pickup)
     if target is not None:
         return _rush(brain, obs, me, target, now)
     return _search(brain, obs, me)
@@ -44,25 +52,42 @@ def _zone_soon(me: dict, obs: dict) -> bool:
 
 def _rush(brain, obs, me, target, now: float) -> Intent:
     px, py = _xy(me["pos"])
-    dist = math.hypot(target.pos[0] - px, target.pos[1] - py)
-    if dist > _standoff(me):
+    tx, ty = float(target.pos[0]), float(target.pos[1])
+    dist = math.hypot(tx - px, ty - py)
+    hold = _standoff(me)
+    if dist > hold + _HOLD_M:
         move, jump = _toward(brain, obs, me, target.pos)
+    elif dist < hold - _HOLD_M:
+        move, jump = _unit(px - tx, py - ty), False
     else:
-        move, jump = _strafe(px, py, target.pos[0], target.pos[1], now), False
-    return Intent(reason="rush", move_vec=move, jump=jump, aim_target=target, fire=(True, True))
+        move, jump = _strafe(px, py, tx, ty, now), False
+    return Intent(
+        reason="rush",
+        move_vec=move,
+        jump=jump,
+        aim_target=target,
+        fire=_triggers(me),
+        boost=_can_boost(me),
+    )
 
 
-def _take(brain, obs, me, pickup, target) -> Intent:
+def _hunt(brain, obs, me, pickup) -> Intent:
+    """Walk to a lightning pickup. Shoot a crate that is already within 40 m."""
     px, py = _xy(me["pos"])
     pos = pickup["pos"]
     dist = math.hypot(float(pos[0]) - px, float(pos[1]) - py)
-    intent = Intent(reason="weapon", fire=(True, True) if target is not None else (False, False))
-    if target is not None:
-        intent.aim_target = target
+    crate = _crate(obs, me)
+    intent = Intent(reason="lightning", fire=(False, False))
+    if crate is not None:
+        cpos = crate["pos"]
+        cz = float(cpos[2]) if len(cpos) > 2 else float(me["pos"][2])
+        intent.aim_target = SimpleNamespace(pos=(float(cpos[0]), float(cpos[1]), cz), vel=(0.0, 0.0, 0.0), id=None)
+        intent.fire = (True, False)
     else:
         intent.aim_yaw_pitch = (math.atan2(float(pos[1]) - py, float(pos[0]) - px), 0.0)
     if dist <= float(brain.rules.loot.pickup_radius):
         intent.take = int(pickup["id"])
+        intent.drop = _swap_slot(me)
         intent.move_vec = (0.0, 0.0)
         intent.slow = True
         return intent
@@ -141,43 +166,110 @@ def _standoff(me: dict) -> float:
     return _LIGHTNING_M if "lightning" in _kinds(me) else _GUN_M
 
 
-def _weapon(obs: dict, me: dict) -> dict | None:
-    if not _has_empty_slot(me):
-        return None
-    held = _kinds(me)
+def _lightning(obs: dict, me: dict) -> dict | None:
     px, py = _xy(me["pos"])
     best = None
-    best_key = None
+    best_dist = _HUNT_M
     for pickup in obs.get("pickups") or []:
-        kind = str(pickup.get("kind") or "")
-        if kind not in _RANK or kind in held:
+        if str(pickup.get("kind") or "") != "lightning":
             continue
         pos = pickup.get("pos")
         if not pos:
             continue
         dist = math.hypot(float(pos[0]) - px, float(pos[1]) - py)
-        if dist > _LOOT_M:
-            continue
-        key = (_RANK[kind], dist, int(pickup.get("id") or 0))
-        if best_key is None or key < best_key:
-            best, best_key = pickup, key
+        if dist <= best_dist:
+            best, best_dist = pickup, dist
     return best
 
 
-def _nearest(brain, me: dict):
-    enemies = getattr(brain.world, "enemies", None)
-    if not callable(enemies):
-        return None
+def _crate(obs: dict, me: dict) -> dict | None:
     px, py = _xy(me["pos"])
     best = None
+    best_dist = _CRATE_M
+    for crate in obs.get("crates") or []:
+        pos = crate.get("pos") if isinstance(crate, dict) else None
+        if not pos:
+            continue
+        dist = math.hypot(float(pos[0]) - px, float(pos[1]) - py)
+        if dist <= best_dist:
+            best, best_dist = crate, dist
+    return best
+
+
+def _chain_target(brain):
+    """Visible enemy with the most neighbors inside 14 m. Ties go to the lowest HP."""
+    visible = _visible(brain)
+    best = None
     best_key = None
-    for enemy in enemies():
-        dist = math.hypot(enemy.pos[0] - px, enemy.pos[1] - py)
+    for enemy in visible:
+        others = 0
+        for other in visible:
+            if other.id == enemy.id:
+                continue
+            if math.hypot(other.pos[0] - enemy.pos[0], other.pos[1] - enemy.pos[1]) <= _CHAIN_M:
+                others += 1
         hp = math.inf if enemy.hp is None else float(enemy.hp)
-        key = (dist, hp, enemy.id)
+        key = (-others, hp, enemy.id)
         if best_key is None or key < best_key:
             best, best_key = enemy, key
     return best
+
+
+def _within(brain, me: dict, radius: float):
+    """The chain target when it is close, otherwise the nearest known enemy inside `radius`."""
+    px, py = _xy(me["pos"])
+    chosen = _chain_target(brain)
+    if chosen is not None and math.hypot(chosen.pos[0] - px, chosen.pos[1] - py) <= radius:
+        return chosen
+    enemies = getattr(brain.world, "enemies", None)
+    if not callable(enemies):
+        return None
+    best = None
+    best_dist = radius
+    for enemy in enemies():
+        dist = math.hypot(enemy.pos[0] - px, enemy.pos[1] - py)
+        if dist <= best_dist:
+            best, best_dist = enemy, dist
+    return best
+
+
+def _visible(brain) -> list:
+    visible = getattr(brain.world, "visible_enemies", None)
+    if not callable(visible):
+        return []
+    return list(visible())
+
+
+def _slot1_lightning(me: dict) -> bool:
+    weapons = list(me.get("weapons") or [])
+    if len(weapons) < 2 or weapons[1] is None:
+        return False
+    weapon = weapons[1]
+    kind = weapon.get("kind") if isinstance(weapon, dict) else weapon
+    return kind == "lightning"
+
+
+def _swap_slot(me: dict) -> int | None:
+    """Drop slot 1 when a mortar or laser is occupying the lightning slot."""
+    weapons = list(me.get("weapons") or [])
+    if len(weapons) < 2 or weapons[1] is None:
+        return None
+    weapon = weapons[1]
+    kind = weapon.get("kind") if isinstance(weapon, dict) else weapon
+    if kind in ("mortar", "laser"):
+        return 1
+    return None
+
+
+def _triggers(me: dict) -> tuple[bool, bool]:
+    energy = me.get("energy")
+    lightning = energy is None or float(energy) >= _LIGHTNING_ENERGY
+    return True, lightning and "lightning" in _kinds(me)
+
+
+def _can_boost(me: dict) -> bool:
+    energy = me.get("energy")
+    return energy is None or float(energy) >= _BOOST_ENERGY
 
 
 def _kinds(me: dict) -> set[str]:
@@ -188,13 +280,6 @@ def _kinds(me: dict) -> set[str]:
         elif isinstance(weapon, str):
             found.add(weapon)
     return found
-
-
-def _has_empty_slot(me: dict) -> bool:
-    weapons = list(me.get("weapons") or [])
-    if len(weapons) < 2:
-        return True
-    return any(slot is None for slot in weapons[:2])
 
 
 def _xy(pos) -> tuple[float, float]:
