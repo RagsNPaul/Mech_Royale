@@ -5,10 +5,12 @@ hp under the fight floor while under fire):
   1. ZONE       - out of the zone, or the safe circle will reach us before we do
   2. DISENGAGE  - hp below min_hp_frac_to_fight AND at least two hostiles inside
                   threat_radius
-  3. FIGHT      - anyone else we can see, remember, or who just shot us
-  4. HIDE       - default: cover inside the next circle, silent, scan
-
-DROP and LOOT are not in v1; those modules return None.
+  3. FIGHT      - a hostile inside 60 m
+  4. LOOT       - a visible cube inside 40 m (this beats a more distant fight)
+  5. FIGHT      - anyone else we can see or who just shot us
+  6. DROP       - a supply drop inside the next circle we can reach within 5 s of landing
+  7. LOOT       - a weapon, a crate, a drone, or a farther cube
+  8. HIDE       - default: cover inside the next circle, silent, scan
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from bot import upgrades
 from bot.config import Rules
 from bot.control import Controller, Intent
 from bot.mapdata import load as load_map
-from bot.modes import disengage, fight, hide, zone
+from bot.modes import disengage, drop, fight, hide, loot, zone
 from bot.nav import Navigator, astar, best_cover, time_to_reach
 from bot.params import PARAMS
 from bot.threat import pick_target, should_fight, zone_safe_s
@@ -34,13 +36,19 @@ _MODES = {
     "ZONE": zone.run,
     "FIGHT": fight.run,
     "DISENGAGE": disengage.run,
+    "DROP": drop.run,
+    "LOOT": loot.run,
     "HIDE": hide.run,
 }
+_LOOT_ABORT_M = 60.0
+_CUBE_M = 40.0
+_DROP_SLACK_S = 5.0
 _WEAPON_SOUNDS = {"gun", "mortar", "laser", "lightning", "laser_charge", "explosion", "npc_gun", "death"}
 _DAMAGE_WINDOW_S = 3.0
 _HOSTILE_RANGE_M = 120.0
 _ZONE_MARGIN_M = 10.0
 _ZONE_INSIDE_M = 15.0
+_PHASE_DPS = 35.0
 
 
 def _arena_dirs(hello: dict[str, Any]) -> list[Path]:
@@ -125,6 +133,7 @@ class Brain:
         self._offer: int | None = None
         self._cover: tuple[float, float] | None = None
         self._cover_key: tuple[Any, ...] | None = None
+        self.supply: dict[str, Any] | None = None
 
     def act(self, obs: dict[str, Any], t0: float) -> dict[str, Any]:
         """One decision. Returns a protocol action; tick is also set by main.py."""
@@ -150,23 +159,46 @@ class Brain:
     def _candidate(self, obs: dict[str, Any]) -> str:
         self.target = None
         self.fight_reason = ""
+        self.supply = None
         if self._zone_urgent(obs):
+            self._set_fight(obs, "zone")
             return "ZONE"
         if self._outnumbered(obs):
             return "DISENGAGE"
+        now = float(obs.get("t") or 0.0)
+        if self._hostile_within(obs, _LOOT_ABORT_M) and self._set_fight(obs, "press"):
+            return "FIGHT"
+        goal = loot.choose(obs, obs["self"], self.world, now)
+        if goal is not None and goal.get("what") == "cube":
+            return "LOOT"
+        if self._contact(obs) and self._set_fight(obs, "press"):
+            return "FIGHT"
+        supply = self._supply_drop(obs)
+        if supply is not None:
+            foe = self._contesting(obs, supply)
+            if foe is not None:
+                self.target = foe
+                self.fight_reason = "drop"
+                return "FIGHT"
+            self.supply = supply
+            return "DROP"
+        if goal is not None:
+            return "LOOT"
+        return "HIDE"
+
+    def _set_fight(self, obs: dict[str, Any], reason: str) -> bool:
         target = pick_target(obs["self"], self.world, self.rules, self.params)
-        reason = "press"
         if target is not None:
-            _fight, reason = should_fight(obs["self"], target, self.world, obs, self.rules, self.params)
-            if reason in ("low_hp", "losing", "zone", "no_los", "no_target"):
-                reason = "press"
+            _fight, why = should_fight(obs["self"], target, self.world, obs, self.rules, self.params)
+            if why not in ("low_hp", "losing", "zone", "no_los", "no_target"):
+                reason = why
         else:
             target = self._fallback_target(obs)
-        if target is not None:
-            self.target = target
-            self.fight_reason = reason
-            return "FIGHT"
-        return "HIDE"
+        if target is None:
+            return False
+        self.target = target
+        self.fight_reason = reason
+        return True
 
     def _outnumbered(self, obs: dict[str, Any]) -> bool:
         """Retreat only below the fight floor and only against two or more nearby hostiles."""
@@ -201,8 +233,78 @@ class Brain:
             return 1.0
         return float(me.get("hp") or 0.0) / max_hp
 
+    def _hostile_within(self, obs: dict[str, Any], radius: float) -> bool:
+        del obs
+        return len(self.world.enemies(radius)) > 0
+
+    def _contact(self, obs: dict[str, Any]) -> bool:
+        if pick_target(obs["self"], self.world, self.rules, self.params) is not None:
+            return True
+        if self._fallback_target(obs) is not None:
+            return True
+        return False
+
+    def _cube_within(self, obs: dict[str, Any], radius: float) -> bool:
+        px, py = _xy(obs["self"]["pos"])
+        for cube in obs.get("cubes") or []:
+            pos = cube.get("pos") if isinstance(cube, dict) else None
+            if pos and _dist(px, py, float(pos[0]), float(pos[1])) <= radius:
+                return True
+        return False
+
+    def _supply_drop(self, obs: dict[str, Any]) -> dict[str, Any] | None:
+        """A drop inside the next circle that we can reach within 5 s of landing."""
+        if self._hp_frac(obs) <= 0.40:
+            return None
+        zone = obs.get("zone") or {}
+        if "next_center" not in zone or "next_radius" not in zone:
+            return None
+        cx, cy = float(zone["next_center"][0]), float(zone["next_center"][1])
+        radius = float(zone["next_radius"])
+        px, py = _xy(obs["self"]["pos"])
+        speed = self._walk_speed(obs["self"])
+        best = None
+        best_eta = math.inf
+        for supply in obs.get("drops") or []:
+            pos = supply.get("pos")
+            if not pos:
+                continue
+            if math.hypot(float(pos[0]) - cx, float(pos[1]) - cy) > radius:
+                continue
+            dist = _dist(px, py, float(pos[0]), float(pos[1]))
+            eta = 0.0 if dist < 1.0 or speed <= 0.0 else dist / speed
+            lands = supply.get("lands_in")
+            lands_in = 0.0 if lands is None else max(0.0, float(lands))
+            if eta > lands_in + _DROP_SLACK_S:
+                continue
+            if eta < best_eta:
+                best, best_eta = supply, eta
+        return best
+
+    def _contesting(self, obs: dict[str, Any], supply: dict[str, Any]) -> Any:
+        pos = supply.get("pos") or (0.0, 0.0)
+        ring = float(supply.get("radius") or 8.0)
+        best = None
+        best_dist = math.inf
+        for enemy in self.world.visible_enemies():
+            dist = _dist(float(pos[0]), float(pos[1]), enemy.pos[0], enemy.pos[1])
+            if dist <= ring and dist < best_dist:
+                best, best_dist = enemy, dist
+        holder = supply.get("holder")
+        if best is None and holder is not None and int(holder) != self.world.self_id:
+            for enemy in self.world.enemies():
+                if enemy.id == int(holder):
+                    return enemy
+        return best
+
     def _switch_now(self, candidate: str, obs: dict[str, Any], now: float) -> bool:
         if candidate == "ZONE":
+            return True
+        if candidate == "DROP":
+            return True
+        if candidate == "LOOT" and self._cube_within(obs, _CUBE_M):
+            return True
+        if self.mode == "LOOT" and candidate == "FIGHT" and self._hostile_within(obs, _LOOT_ABORT_M):
             return True
         if self._hp_frac(obs) < float(self.params["min_hp_frac_to_fight"]) and self._under_fire(obs):
             return True
@@ -211,6 +313,8 @@ class Brain:
     def _zone_urgent(self, obs: dict[str, Any]) -> bool:
         me = obs["self"]
         if me.get("in_zone") is False:
+            return True
+        if self._phase_edge(obs):
             return True
         safe = zone_safe_s(me, obs)
         if math.isinf(safe):
@@ -227,6 +331,25 @@ class Brain:
         path = astar(self.map, (px, py), goal)
         if path:
             eta = time_to_reach(path, speed)
+        return eta * 1.3 >= safe
+
+    def _phase_edge(self, obs: dict[str, Any]) -> bool:
+        """Phase 2+ (35 dps): leave the fight when the ring edge is farther than the zone allows."""
+        zone = obs.get("zone") or {}
+        try:
+            dps = float(zone.get("dps"))
+        except (TypeError, ValueError):
+            return False
+        if dps < _PHASE_DPS:
+            return False
+        safe = zone_safe_s(obs["self"], obs)
+        if math.isinf(safe):
+            return False
+        goal = self.ring_point(obs, 0.0)
+        px, py = _xy(obs["self"]["pos"])
+        straight = _dist(px, py, goal[0], goal[1])
+        speed = self._walk_speed(obs["self"])
+        eta = 0.0 if straight < 1.0 or speed <= 0.0 else straight / speed
         return eta * 1.3 >= safe
 
     def _pressed(self, obs: dict[str, Any]) -> bool:

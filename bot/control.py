@@ -146,6 +146,10 @@ class Controller:
         fire = self._fire(intent, me, desired, dist)
         jump = steered_jump if intent.jump is None else bool(intent.jump)
         boost = False if intent.slow else bool(intent.boost)
+        if (intent.mode or "").upper() == "FIGHT":
+            energy = me.get("energy")
+            if energy is not None and float(energy) < 30.0:
+                boost = False
         action: dict[str, Any] = {
             "tick": obs["tick"],
             "move": [float(move[0]), float(move[1])],
@@ -251,7 +255,7 @@ class Controller:
             if not isinstance(weapon, dict):
                 continue
             kind = str(weapon.get("kind") or "")
-            if not aligned and kind != "laser":
+            if not aligned and kind not in ("laser", "lightning"):
                 continue
             if not self._weapon_ready(kind, weapon, me, desired, dist, aligned):
                 continue
@@ -269,13 +273,16 @@ class Controller:
     ) -> bool:
         if kind == "laser":
             return self._laser_trigger(weapon, me, desired, dist)
+        if kind == "lightning":
+            energy = me.get("energy")
+            if energy is not None and float(energy) < 10.0:
+                return False
+            return self._in_cone(me, desired, dist)
         if not aligned:
             return False
         reach = self._range(kind, weapon)
         if math.isfinite(reach) and dist > reach:
             return False
-        if kind == "lightning":
-            return self._in_cone(me, desired, dist)
         ammo = weapon.get("ammo")
         if ammo is not None and float(ammo) <= 0.0:
             return False

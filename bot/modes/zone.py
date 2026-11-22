@@ -21,6 +21,16 @@ def run(brain, obs) -> Intent:
     if _dot(move, toward) <= 0.0:
         length = math.hypot(toward[0], toward[1])
         move = (0.0, 0.0) if length < 1e-6 else (toward[0] / length, toward[1] / length)
+    target = brain.target
+    if target is not None:
+        return Intent(
+            reason="zone",
+            move_vec=move,
+            jump=jump,
+            aim_target=target,
+            fire=(True, True),
+            boost=True,
+        )
     bearing = brain.threat_bearing()
     if bearing is None:
         bearing = math.atan2(goal[1] - py, goal[0] - px)

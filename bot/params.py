@@ -28,7 +28,7 @@ PARAMS = {
 
     # --- loot / drops ---
     "loot_phase_end_s": 60.0,
-    "npc_farm_max_dist_m": 80.0,
+    "npc_farm_max_dist_m": 150.0,
     "drop_contest_clear_m": 60.0,  # contest a drop only if nobody seen/heard this close
 
     # --- timing ---

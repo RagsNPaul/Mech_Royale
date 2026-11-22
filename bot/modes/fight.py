@@ -6,6 +6,8 @@ import math
 
 from bot.control import Intent
 
+_STILL = 0.2
+
 
 def run(brain, obs) -> Intent:
     me = obs["self"]
@@ -24,9 +26,11 @@ def run(brain, obs) -> Intent:
     else:
         radial = (0.0, 0.0)
     move = _unit(radial[0] + side[0], radial[1] + side[1])
-    if move == (0.0, 0.0):
+    if math.hypot(move[0], move[1]) < _STILL:
         move = side
     move = _stay_inside(px, py, obs.get("zone"), move)
+    if math.hypot(move[0], move[1]) < _STILL:
+        move = side if math.hypot(side[0], side[1]) >= _STILL else _unit(-(ty - py), tx - px)
     return Intent(
         reason=brain.fight_reason or "fight",
         move_vec=move,
@@ -43,9 +47,11 @@ def _band(me: dict) -> tuple[float, float]:
             kinds.add(weapon["kind"])
         elif isinstance(weapon, str):
             kinds.add(weapon)
-    if kinds and kinds <= {"lightning"}:
-        return 0.0, 40.0
-    return 60.0, 150.0
+    if "lightning" in kinds:
+        return 0.0, 30.0
+    if "laser" in kinds:
+        return 80.0, 150.0
+    return 0.0, 60.0
 
 
 def _stay_inside(px: float, py: float, zone: dict | None, move: tuple[float, float]) -> tuple[float, float]:
