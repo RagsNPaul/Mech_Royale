@@ -122,3 +122,54 @@ def test_low_energy_holds_lightning_and_keeps_the_gun(hello):
     fired = brain.act(obs, time.perf_counter())
     assert fired["fire"][0] is True
     assert fired["fire"][1] is False
+
+
+def test_walks_to_a_cube_when_nobody_is_close(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    cube = [origin[0] + 30.0, origin[1], origin[2]]
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(cubes=[{"id": 5012, "pos": cube}]),
+    )
+    act = brain.act(obs, time.perf_counter())
+    assert act["move"][0] > 0.5
+
+
+def test_kill_sets_the_goal_on_the_victim(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    victim = _actor(5, [origin[0] + 50.0, origin[1], origin[2]], 100)
+    seen = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[victim]),
+    )
+    brain.act(seen, time.perf_counter())
+    obs = make_obs(
+        at_time(50.2),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(events=[{"type": "kill", "target": 5}]),
+    )
+    act = brain.act(obs, time.perf_counter())
+    assert act["move"][0] > 0.5
+
+
+def test_steps_onto_a_close_cube_while_aiming_at_the_enemy(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, [origin[0] + 20.0, origin[1], origin[2]], 1400)
+    cube = [origin[0], origin[1] + 8.0, origin[2]]
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy], cubes=[{"id": 5013, "pos": cube}]),
+    )
+    act = brain.act(obs, time.perf_counter())
+    assert act["move"][1] > 0.5
+    assert abs(act["aim"][0]) < 0.4
