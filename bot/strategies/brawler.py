@@ -8,6 +8,7 @@ lightning, the nearest lightning pickup inside 150 m is the goal. Crates inside
 from __future__ import annotations
 
 import math
+import random
 from types import SimpleNamespace
 
 from bot.control import Intent
@@ -24,6 +25,9 @@ _FIGHT_M = 60.0
 _FIGHT_ON_WAY_M = 40.0
 _CHAIN_M = 14.0
 _HOLD_M = 2.0
+_STRAFE_MIN_S = 0.4
+_STRAFE_MAX_S = 0.9
+_STRAFE_LEAN_DEG = 30.0
 _LIGHTNING_ENERGY = 8.0
 _RESERVE = 9.0
 _REGEN_ENERGY = 15.0
@@ -65,7 +69,7 @@ def _rush(brain, obs, me, target, now: float) -> Intent:
     elif dist < hold - _HOLD_M:
         move, jump = _unit(px - tx, py - ty), False
     else:
-        move, jump = _strafe(px, py, tx, ty, now), False
+        move, jump = _strafe(brain, px, py, tx, ty, now), False
     return Intent(
         reason="rush",
         move_vec=move,
@@ -164,10 +168,35 @@ def _blocked(brain, me, pos) -> bool:
     return not grid.los((ax, ay, az + eye), (float(pos[0]), float(pos[1]), bz + eye), False)
 
 
-def _strafe(px: float, py: float, tx: float, ty: float, now: float) -> tuple[float, float]:
+def _strafe_rng(brain) -> random.Random:
+    rng = getattr(brain, "_strafe_rng", None)
+    if rng is None:
+        rng = random.Random(int(getattr(brain, "seed", 0) or 0))
+        brain._strafe_rng = rng
+    return rng
+
+
+def _strafe(brain, px: float, py: float, tx: float, ty: float, now: float) -> tuple[float, float]:
+    """Sidestep on a seeded 0.4–0.9 s clock, with a small step toward or away from the target."""
     bearing = math.atan2(ty - py, tx - px)
-    side = 1.0 if math.floor(now) % 2 == 0 else -1.0
-    yaw = bearing + side * (math.pi / 2.0)
+    until = getattr(brain, "_strafe_until", None)
+    if until is None or now >= float(until):
+        rng = _strafe_rng(brain)
+        previous = getattr(brain, "_strafe_side", None)
+        if previous is None:
+            side = 1.0 if rng.random() < 0.5 else -1.0
+        else:
+            side = -float(previous)
+        lean = math.radians(rng.uniform(0.0, _STRAFE_LEAN_DEG))
+        if rng.random() < 0.5:
+            lean = -lean
+        brain._strafe_side = side
+        brain._strafe_lean = lean
+        brain._strafe_until = now + rng.uniform(_STRAFE_MIN_S, _STRAFE_MAX_S)
+    else:
+        side = float(brain._strafe_side)
+        lean = float(brain._strafe_lean)
+    yaw = bearing + side * (math.pi / 2.0) + lean
     return math.cos(yaw), math.sin(yaw)
 
 

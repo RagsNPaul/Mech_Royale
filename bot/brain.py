@@ -126,7 +126,8 @@ class Brain:
                 _nav._jump_tables(self.map)
             except Exception as exc:
                 print(f"path cache warm failed ({exc})", file=sys.stderr)
-        self.control = Controller(self.rules, self.params, seed=int(hello.get("seed") or 0))
+        self.seed = int(hello.get("seed") or 0)
+        self.control = Controller(self.rules, self.params, seed=self.seed)
         self.target = None
         self.fight_reason = ""
         self.t0 = 0.0

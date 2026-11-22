@@ -122,3 +122,31 @@ def test_low_energy_holds_lightning_and_keeps_the_gun(hello):
     fired = brain.act(obs, time.perf_counter())
     assert fired["fire"][0] is True
     assert fired["fire"][1] is False
+
+
+def test_strafe_reversals_are_not_evenly_spaced(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    hold = 12.0
+    pos = list(origin)
+    enemy = [pos[0] + hold, pos[1], pos[2]]
+    flips = []
+    last_side = None
+    step = 0.05
+    for index in range(int(10.0 / step)):
+        now = 50.0 + index * step
+        obs = make_obs(
+            at_time(now),
+            with_self(hp=1400, pos=pos, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+            _safe_zone(pos),
+            **_quiet(mechs=[_actor(5, enemy, 1400)]),
+        )
+        act = brain.act(obs, time.perf_counter())
+        assert abs(act["aim"][0]) < 0.35
+        side = 1 if act["move"][1] >= 0.0 else -1
+        if last_side is not None and side != last_side:
+            flips.append(now)
+        last_side = side
+    gaps = [b - a for a, b in zip(flips, flips[1:])]
+    assert len(gaps) >= 8
+    assert max(gaps) - min(gaps) > 0.12
