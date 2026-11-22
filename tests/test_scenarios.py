@@ -95,11 +95,11 @@ def test_lone_low_target_is_fought_once_aligned(hello):
     assert aligned["fire"][0] is True
 
 
-def test_low_hp_against_two_enemies_retreats_while_facing_one(hello):
+def test_two_enemies_do_not_retreat(hello):
     brain = Brain(hello)
     origin = _origin(brain)
     first = _actor(5, [origin[0] + 40.0, origin[1], origin[2]], 1400)
-    second = _actor(6, [origin[0] + 70.0, origin[1] + 8.0, origin[2]], 1400)
+    second = _actor(6, [origin[0] + 50.0, origin[1] + 8.0, origin[2]], 1400)
     obs = make_obs(
         at_time(20.0),
         with_self(hp=0.14 * 1400.0, pos=origin, in_zone=True, aim=[0.0, 0.0]),
@@ -108,11 +108,29 @@ def test_low_hp_against_two_enemies_retreats_while_facing_one(hello):
         events=[],
         sounds=[],
     )
+    brain.act(obs, time.perf_counter())
+    assert brain.mode == "FIGHT"
+
+
+def test_three_hostiles_inside_60m_disengage(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    first = _actor(5, [origin[0] + 40.0, origin[1], origin[2]], 1400)
+    second = _actor(6, [origin[0] + 30.0, origin[1] + 20.0, origin[2]], 1400)
+    third = _actor(7, [origin[0] - 20.0, origin[1] + 30.0, origin[2]], 1400)
+    obs = make_obs(
+        at_time(20.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0]),
+        _safe_zone(origin),
+        mechs=[first, second, third],
+        events=[],
+        sounds=[],
+    )
     act = brain.act(obs, time.perf_counter())
     assert brain.mode == "DISENGAGE"
     aim = act["aim"][0]
     errors = []
-    for enemy in (first, second):
+    for enemy in (first, second, third):
         bearing = math.atan2(enemy["pos"][1] - origin[1], enemy["pos"][0] - origin[0])
         errors.append(abs(_wrap(aim - bearing)))
     assert min(errors) < 0.45
@@ -197,8 +215,8 @@ def test_modes_do_not_flip_flop(hello):
     enemy_pos = _los_point(brain, origin, 50.0)
     previous = brain.mode
     switches = 0
-    # 2.9 s of alternation sits inside the 3 s hold.
-    for step in range(29):
+    # 3.9 s of alternation sits inside the 4 s hold and past the old 3 s hold.
+    for step in range(39):
         t = 10.0 + step * 0.1
         mechs = [_actor(5, enemy_pos, 150)] if step % 2 == 0 else []
         obs = make_obs(

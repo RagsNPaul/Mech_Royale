@@ -3,8 +3,7 @@
 Priority each tick (first match wins, subject to mode_hold_s except ZONE and
 hp under the fight floor while under fire):
   1. ZONE       - out of the zone, or the safe circle will reach us before we do
-  2. DISENGAGE  - hp below min_hp_frac_to_fight AND at least two hostiles inside
-                  threat_radius
+  2. DISENGAGE  - three or more hostiles inside 60 m
   3. FIGHT      - a hostile inside 60 m
   4. LOOT       - a visible cube inside 40 m (this beats a more distant fight)
   5. FIGHT      - anyone else we can see or who just shot us
@@ -201,11 +200,9 @@ class Brain:
         return True
 
     def _outnumbered(self, obs: dict[str, Any]) -> bool:
-        """Retreat only below the fight floor and only against two or more nearby hostiles."""
-        floor = float(self.params["min_hp_frac_to_fight"])
-        if self._hp_frac(obs) >= floor:
-            return False
-        return len(self.world.enemies(float(self.params["threat_radius_m"]))) >= 2
+        """Retreat only when three or more hostiles are inside 60 m."""
+        del obs
+        return len(self.world.enemies(_LOOT_ABORT_M)) >= 3
 
     def _fallback_target(self, obs: dict[str, Any]) -> Any:
         """A remembered mech, or a point along the latest damage bearing."""
