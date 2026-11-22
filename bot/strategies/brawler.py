@@ -15,8 +15,8 @@ from bot.threat import zone_safe_s
 
 _ZONE_S = 8.0
 _BOOST_ZONE_S = 10.0
-_LIGHTNING_M = 20.0
-_GUN_M = 45.0
+_LIGHTNING_M = 12.0
+_GUN_M = 30.0
 _RING_M = 15.0
 _HUNT_M = 150.0
 _CRATE_M = 40.0
