@@ -2,6 +2,10 @@
 
 Rules numbers (weapon damage, ranges, zone) are NOT here: read them from hello.config via bot.config.
 """
+
+import json
+import os
+
 PARAMS = {
     # --- fight / hide decision (threat.py) ---
     "base_margin": 5.0,          # FIGHT if my_ttk < margin * their_ttk
@@ -38,6 +42,12 @@ PARAMS = {
     # --- which decision loop Brain.act runs ---
     "strategy": "brawler",
 
+    # --- brawler (bot/strategies/brawler.py) ---
+    "standoff_lightning_m": 20.0,  # hold this far once lightning is equipped
+    "standoff_gun_m": 45.0,         # hold this far with guns only
+    "cube_detour_m": 80.0,          # walk this far for a cube when nobody is close
+    "heal_hp_frac": 0.0,            # under this fraction, detour for cubes even in a fight
+
     # --- upgrades (priority order; unknown ids fall to the end) ---
     "upgrade_priority": [
         "lightning_efficiency",
@@ -57,3 +67,6 @@ PARAMS = {
         "sensors",
     ],
 }
+
+# Shallow overlay for tools/overnight.py. Unset matches "{}".
+PARAMS.update(json.loads(os.environ.get("MECH_PARAMS", "{}")))

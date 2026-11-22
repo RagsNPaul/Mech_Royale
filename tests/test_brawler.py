@@ -5,9 +5,9 @@ import time
 
 from bot.brain import Brain
 from bot.params import PARAMS
-from tests.fixtures import at_time, make_obs, with_self
+from tests.fixtures import at_time, make_obs, with_self, with_zone
 from tests.test_replay import _validator
-from tests.test_scenarios import _actor, _origin, _quiet, _safe_zone
+from tests.test_scenarios import _actor, _los_point, _origin, _quiet, _safe_zone
 
 
 def test_brawler_replay_is_fast_and_schema_valid(hello, observations, monkeypatch):
@@ -211,4 +211,234 @@ def test_far_enemy_is_aimed_while_walking_to_a_cube(hello):
     obs["tick"] = int(round(obs["t"] * 20))
     fired = brain.act(obs, time.perf_counter())
     assert fired["move"][0] > 0.5
+    assert fired["fire"][0] is True
+
+
+def test_standoff_distance_comes_from_params(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "standoff_lightning_m", 40.0)
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, [origin[0] + 20.0, origin[1], origin[2]], 1400)
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy]),
+    )
+    act = brain.act(obs, time.perf_counter())
+    assert act["move"][0] < -0.5
+
+
+def test_low_hp_detours_for_a_cube_when_heal_frac_says_so(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "heal_hp_frac", 0.75)
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, [origin[0] + 70.0, origin[1], origin[2]], 1400)
+    cube = [origin[0], origin[1] + 30.0, origin[2]]
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=200, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy], cubes=[{"id": 5016, "pos": cube}]),
+    )
+    obs["self"]["max_hp"] = 1000.0
+    act = brain.act(obs, time.perf_counter())
+    assert act["move"][1] > 0.5
+    assert abs(act["move"][1]) > abs(act["move"][0])
+
+
+def _debug(act) -> str:
+    return str((act.get("debug") or {}).get("label") or "")
+
+
+def _npc_at(brain, origin, dist: float, ident: int = 101) -> dict:
+    npc = _actor(ident, _los_point(brain, origin, dist), 350)
+    npc["kind"] = "npc"
+    npc["max_hp"] = 350
+    return npc
+
+
+def _dot(move, origin, pos) -> float:
+    dx = float(pos[0]) - float(origin[0])
+    dy = float(pos[1]) - float(origin[1])
+    return float(move[0]) * dx + float(move[1]) * dy
+
+
+def test_npc_inside_aggro_is_killed_with_both_weapons(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    npc = _npc_at(brain, origin, 30.0)
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[npc]),
+    )
+    obs["self"]["energy"] = 100.0
+    aimed = brain.act(obs, time.perf_counter())
+    assert "| npc" in _debug(aimed)
+    assert _dot(aimed["move"], origin, npc["pos"]) > 0.0
+    obs["self"]["aim"] = list(aimed["aim"])
+    obs["t"] = 50.1
+    obs["tick"] = int(round(obs["t"] * 20))
+    fired = brain.act(obs, time.perf_counter())
+    assert fired["fire"][0] is True
+    assert fired["fire"][1] is True
+
+
+def test_npc_that_shot_us_is_chased_out_to_the_leash(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    npc = _npc_at(brain, origin, 55.0)
+    quiet = _quiet(mechs=[npc])
+    ignored = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **quiet,
+    )
+    assert "| npc" not in _debug(brain.act(ignored, time.perf_counter()))
+    shot = make_obs(
+        at_time(50.2),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(
+            mechs=[npc],
+            events=[{"type": "damaged", "weapon": "npc", "amount": 25, "by": 101}],
+        ),
+    )
+    act = brain.act(shot, time.perf_counter())
+    assert "| npc" in _debug(act)
+    assert _dot(act["move"], origin, npc["pos"]) > 0.0
+
+
+def test_npc_cubes_are_collected_after_the_kill(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    npc = _npc_at(brain, origin, 30.0)
+    seen = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[npc]),
+    )
+    brain.act(seen, time.perf_counter())
+    killed = make_obs(
+        at_time(50.2),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(events=[{"type": "kill", "target": 101}]),
+    )
+    act = brain.act(killed, time.perf_counter())
+    assert _dot(act["move"], origin, npc["pos"]) > 0.0
+
+
+def test_engaged_mech_steers_around_a_drone(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    mech_pos = _los_point(brain, origin, 70.0)
+    dx = mech_pos[0] - origin[0]
+    dy = mech_pos[1] - origin[1]
+    npc_pos = [origin[0] + dx * (25.0 / 70.0), origin[1] + dy * (25.0 / 70.0), origin[2]]
+    npc = _actor(101, npc_pos, 350)
+    npc["kind"] = "npc"
+    npc["max_hp"] = 350
+    mech = _actor(5, mech_pos, 1400)
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[mech, npc]),
+    )
+    act = brain.act(obs, time.perf_counter())
+    assert "| rush" in _debug(act)
+    assert _dot(act["move"], origin, npc_pos) < 0.0
+
+
+def test_zone_starts_within_15s_and_keeps_firing(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, _los_point(brain, origin, 25.0), 1400)
+    soon = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        with_zone(origin[:2], 40.0, [origin[0] + 180.0, origin[1]], 20.0, 50.0, 110.0, 20.0),
+        **_quiet(mechs=[enemy]),
+    )
+    soon["self"]["energy"] = 100.0
+    aimed = brain.act(soon, time.perf_counter())
+    assert "| zone" in _debug(aimed)
+    soon["self"]["aim"] = list(aimed["aim"])
+    soon["t"] = 50.1
+    soon["tick"] = int(round(soon["t"] * 20))
+    fired = brain.act(soon, time.perf_counter())
+    assert fired["fire"][0] is True
+    assert fired["fire"][1] is True
+    later = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        with_zone(origin[:2], 40.0, [origin[0] + 100.0, origin[1]], 20.0, 50.0, 110.0, 20.0),
+        **_quiet(mechs=[enemy]),
+    )
+    assert "| rush" in _debug(brain.act(later, time.perf_counter()))
+
+
+def test_stuck_motion_jumps_strafes_then_replans(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy_pos = _los_point(brain, origin, 70.0)
+    enemy = _actor(5, enemy_pos, 1400)
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy]),
+    )
+    first = brain.act(obs, time.perf_counter())
+    heading = math.atan2(first["move"][1], first["move"][0])
+    brain.nav.path = [(origin[0], origin[1])]
+    brain.nav.goal = (origin[0] + 10.0, origin[1])
+    obs["t"] = 53.0
+    obs["tick"] = int(round(obs["t"] * 20))
+    stuck = brain.act(obs, time.perf_counter())
+    yaw = math.atan2(stuck["move"][1], stuck["move"][0])
+    assert stuck["jump"] is True
+    assert abs(math.atan2(math.sin(yaw - (heading + math.pi / 2.0)), math.cos(yaw - (heading + math.pi / 2.0)))) < 0.4
+    assert brain.nav.path
+    obs["t"] = 54.0
+    obs["tick"] = int(round(obs["t"] * 20))
+    brain.act(obs, time.perf_counter())
+    assert brain.nav.path == []
+    assert brain.nav.goal is None
+
+
+def test_bearing_collects_a_cube_and_shoots_a_crate(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    cube = [origin[0] + 20.0, origin[1] + 15.0, origin[2]]
+    sound = [{"bearing": 0.0, "dist": "near", "kind": "gun", "age": 0.0}]
+    to_cube = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(sounds=sound, cubes=[{"id": 5017, "pos": cube}]),
+    )
+    act = brain.act(to_cube, time.perf_counter())
+    assert "| bearing" in _debug(act)
+    assert act["move"][1] > 0.25
+    crate_brain = Brain(hello)
+    crate = [origin[0] + 18.0, origin[1] + 10.0, origin[2]]
+    to_crate = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(sounds=sound, crates=[{"id": 3011, "pos": crate, "hp": 100}]),
+    )
+    aimed = crate_brain.act(to_crate, time.perf_counter())
+    assert "| bearing" in _debug(aimed)
+    assert aimed["aim"][0] > 0.25
+    to_crate["self"]["aim"] = list(aimed["aim"])
+    to_crate["t"] = 50.1
+    to_crate["tick"] = int(round(to_crate["t"] * 20))
+    fired = crate_brain.act(to_crate, time.perf_counter())
     assert fired["fire"][0] is True
