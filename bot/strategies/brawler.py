@@ -29,6 +29,12 @@ _RESERVE = 9.0
 _REGEN_ENERGY = 15.0
 _REGEN_DIST = 25.0
 _REGEN_HOLD_S = 1.0
+_CUBE_CLEAR_M = 40.0
+_CUBE_FAR_M = 80.0
+_CUBE_FIGHT_M = 12.0
+_DROP_ENEMY_M = 30.0
+_DROP_S = 10.0
+_HP_GRAB = 0.50
 
 
 def run(brain, obs) -> Intent:
@@ -37,6 +43,13 @@ def run(brain, obs) -> Intent:
     target = _chain_target(brain)
     if _zone_soon(me, obs):
         return _zone(brain, obs, me, target)
+    _note_drops(brain, obs, now)
+    cube = _cube_move(brain, obs, me, now)
+    if cube is not None:
+        return cube
+    drop = _drop_move(brain, obs, me)
+    if drop is not None:
+        return drop
     if not _slot1_lightning(me):
         close = _within(brain, me, _FIGHT_ON_WAY_M)
         if close is not None:
@@ -47,6 +60,129 @@ def run(brain, obs) -> Intent:
     if target is not None:
         return _rush(brain, obs, me, target, now)
     return _search(brain, obs, me)
+
+
+def _cube_move(brain, obs, me, now: float) -> Intent | None:
+    """No one close: detour up to 80 m. In a fight, only step onto a cube at our feet."""
+    px, py = _xy(me["pos"])
+    close = _within(brain, me, _CUBE_CLEAR_M)
+    if close is None:
+        cube = _nearest_cube(obs, me, _CUBE_FAR_M)
+        if cube is None:
+            return None
+        return _walk_cube(brain, obs, me, cube["pos"])
+    cube = _nearest_cube(obs, me, _CUBE_FIGHT_M)
+    if cube is None or not _winning(me):
+        return None
+    pos = cube["pos"]
+    move, jump = _toward(brain, obs, me, pos)
+    if math.hypot(float(pos[0]) - px, float(pos[1]) - py) <= float(brain.rules.cubes.pickup_radius):
+        move, jump = (0.0, 0.0), False
+    return Intent(
+        reason="cube",
+        move_vec=move,
+        jump=jump,
+        slow=move == (0.0, 0.0),
+        aim_target=close,
+        fire=_shots(brain, me, close, now),
+        boost=_boost(brain, obs, me),
+    )
+
+
+def _walk_cube(brain, obs, me, pos) -> Intent:
+    px, py = _xy(me["pos"])
+    tx, ty = float(pos[0]), float(pos[1])
+    dist = math.hypot(tx - px, ty - py)
+    if dist <= float(brain.rules.cubes.pickup_radius):
+        return Intent(reason="cube", move_vec=(0.0, 0.0), slow=True, fire=(False, False))
+    move, jump = _toward(brain, obs, me, pos)
+    return Intent(reason="cube", move_vec=move, jump=jump, boost=_boost(brain, obs, me), fire=(False, False))
+
+
+def _drop_move(brain, obs, me) -> Intent | None:
+    """A kill's cubes land on the body. Walk there unless someone is already close."""
+    if _within(brain, me, _DROP_ENEMY_M) is not None:
+        return None
+    drops = getattr(brain, "_cube_drops", ())
+    if not drops:
+        return None
+    px, py = _xy(me["pos"])
+    pos = min(drops, key=lambda item: math.hypot(item[1][0] - px, item[1][1] - py))[1]
+    weapon = _dropped_weapon(obs, me, pos)
+    dist = math.hypot(pos[0] - px, pos[1] - py)
+    intent = Intent(reason="drop", fire=(False, False), boost=_boost(brain, obs, me))
+    if weapon is not None and dist <= float(brain.rules.loot.pickup_radius):
+        intent.take = int(weapon["id"])
+        intent.drop = _swap_slot(me)
+        intent.move_vec = (0.0, 0.0)
+        intent.slow = True
+        return intent
+    if dist <= float(brain.rules.cubes.pickup_radius):
+        intent.move_vec = (0.0, 0.0)
+        intent.slow = True
+        return intent
+    move, jump = _toward(brain, obs, me, pos)
+    intent.move_vec = move
+    intent.jump = jump
+    return intent
+
+
+def _note_drops(brain, obs, now: float) -> None:
+    pending = [item for item in getattr(brain, "_cube_drops", ()) if now <= item[0]]
+    mechs = getattr(brain.world, "mechs", {}) or {}
+    for event in obs.get("events") or []:
+        if event.get("type") != "kill":
+            continue
+        target = event.get("target")
+        if target is None:
+            continue
+        track = mechs.get(int(target))
+        if track is None:
+            continue
+        pending.append((now + _DROP_S, (float(track.pos[0]), float(track.pos[1]), float(track.pos[2]))))
+    brain._cube_drops = pending
+
+
+def _nearest_cube(obs, me, radius: float) -> dict | None:
+    px, py = _xy(me["pos"])
+    best = None
+    best_dist = radius
+    for cube in obs.get("cubes") or []:
+        pos = cube.get("pos") if isinstance(cube, dict) else None
+        if not pos:
+            continue
+        dist = math.hypot(float(pos[0]) - px, float(pos[1]) - py)
+        if dist <= best_dist:
+            best, best_dist = cube, dist
+    return best
+
+
+def _dropped_weapon(obs, me, pos) -> dict | None:
+    if _slot1_lightning(me):
+        return None
+    best = None
+    best_key = None
+    for pickup in obs.get("pickups") or []:
+        kind = str(pickup.get("kind") or "")
+        if kind not in ("lightning", "laser"):
+            continue
+        spot = pickup.get("pos")
+        if not spot:
+            continue
+        if math.hypot(float(spot[0]) - pos[0], float(spot[1]) - pos[1]) > 15.0:
+            continue
+        dist = math.hypot(float(spot[0]) - _xy(me["pos"])[0], float(spot[1]) - _xy(me["pos"])[1])
+        key = (0 if kind == "lightning" else 1, dist)
+        if best_key is None or key < best_key:
+            best, best_key = pickup, key
+    return best
+
+
+def _winning(me: dict) -> bool:
+    max_hp = float(me.get("max_hp") or 0.0)
+    if max_hp <= 0.0:
+        return True
+    return float(me.get("hp") or 0.0) / max_hp > _HP_GRAB
 
 
 def _zone_soon(me: dict, obs: dict) -> bool:
