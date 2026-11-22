@@ -36,7 +36,7 @@ PARAMS = {
     "replan_every_s": 1.0,
 
     # --- which decision loop Brain.act runs ---
-    "strategy": "brawler",
+    "strategy": "roof",
 
     # --- upgrades (priority order; unknown ids fall to the end) ---
     "upgrade_priority": [

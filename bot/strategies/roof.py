@@ -26,6 +26,7 @@ _EDGE_IN_M = 4.0
 _CLEAR_M = 0.5
 _HEAL_ENTER = 0.40
 _HEAL_EXIT = 0.85
+_EDGE_ENERGY = 60.0
 _LEAVE_S = 15.0
 _CLIMB_S = 8.0
 _STUCK_S = 1.5
@@ -90,9 +91,11 @@ def run(brain, obs) -> Intent:
     if _on_roof(me, roof) and _leaves_soon(brain, obs, roof):
         brain._roof = None
         brain._roof_healing = False
+        brain._roof_charged = False
         return _drop(brain, obs, me)
     if _on_roof(me, roof):
         return _hold(brain, obs, me, roof, now)
+    brain._roof_charged = False
     return _climb(brain, obs, me, roof, now)
 
 
@@ -104,6 +107,7 @@ def _ensure(brain, obs, me) -> dict | None:
     brain._roof = _pick_live(brain, obs, me)
     brain._roof_side = 0
     brain._roof_fails = 0
+    brain._roof_charged = False
     brain._climb_t = None
     brain._climb_z = None
     brain._climb_rise_t = None
@@ -112,6 +116,8 @@ def _ensure(brain, obs, me) -> dict | None:
 
 def _hold(brain, obs, me, roof, now: float) -> Intent:
     px, py, _pz = (float(v) for v in me["pos"][:3])
+    if not _charged(brain, me):
+        return _recharge(brain, obs, me, roof, px, py)
     frac = _hp_frac(me)
     healing = bool(getattr(brain, "_roof_healing", False))
     on_roof_enemy = _enemy_on_roof(brain, me, roof)
@@ -127,16 +133,42 @@ def _hold(brain, obs, me, roof, now: float) -> Intent:
     move, jump = _go(brain, obs, me, post)
     if math.hypot(post[0] - px, post[1] - py) <= _ARRIVE_M:
         move, jump = (0.0, 0.0), False
-    intent = Intent(reason="roof", move_vec=move, jump=jump, slow=move == (0.0, 0.0))
+    intent = Intent(reason="roof", move_vec=move, jump=jump, slow=move == (0.0, 0.0), boost=False)
     if foe is not None:
         intent.aim_target = foe
-        intent.fire = brawler._triggers(me)
+        intent.fire = brawler._shots(brain, me, foe, now)
         return intent
     bearing = brain.threat_bearing()
     if bearing is None:
         bearing = math.atan2(py - float(roof["centroid"][1]), px - float(roof["centroid"][0]))
     intent.aim_yaw_pitch = (bearing, 0.0)
     intent.fire = (False, False)
+    return intent
+
+
+def _charged(brain, me: dict) -> bool:
+    """The climb spends the pool. Stay in the middle until lightning can fire again."""
+    if getattr(brain, "_roof_charged", False):
+        return True
+    energy = me.get("energy")
+    if energy is None or float(energy) >= _EDGE_ENERGY:
+        brain._roof_charged = True
+        return True
+    return False
+
+
+def _recharge(brain, obs, me, roof, px: float, py: float) -> Intent:
+    centroid = (float(roof["centroid"][0]), float(roof["centroid"][1]))
+    if math.hypot(centroid[0] - px, centroid[1] - py) <= _ARRIVE_M:
+        move, jump = (0.0, 0.0), False
+    else:
+        move, jump = _go(brain, obs, me, centroid)
+    intent = Intent(reason="recharge", move_vec=move, jump=jump, slow=move == (0.0, 0.0), boost=False, fire=(False, False))
+    foe = _los_enemy(brain, me)
+    if foe is not None:
+        intent.aim_target = foe
+        intent.fire = (True, False)
+        intent.aim_yaw_pitch = None
     return intent
 
 
@@ -244,13 +276,23 @@ def _leaves_soon(brain, obs, roof) -> bool:
     return not math.isinf(safe) and safe <= _LEAVE_S
 
 
+def warm(brain) -> None:
+    """Build the building list once, before the first decision."""
+    _catalog(brain)
+
+
 def _pick_live(brain, obs, me) -> dict | None:
     zone = obs.get("zone") or {}
     px, py = float(me["pos"][0]), float(me["pos"][1])
-    scored = []
+    near = []
     for roof in _catalog(brain):
         if choose_roof(me["pos"], zone, [{**roof, "path_length": 0.0}]) is None:
             continue
+        cx, cy = float(roof["centroid"][0]), float(roof["centroid"][1])
+        near.append((math.hypot(cx - px, cy - py), roof))
+    near.sort(key=lambda item: item[0])
+    scored = []
+    for _dist, roof in near[:3]:
         wall = _wall(roof, px, py, 0)
         scored.append({**roof, "path_length": _path_length(brain, (px, py), wall)})
     return choose_roof(me["pos"], zone, scored)
