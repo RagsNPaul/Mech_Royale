@@ -4,10 +4,17 @@ import math
 import time
 
 import numpy as np
+import pytest
 
 from bot.brain import Brain
+from bot.params import PARAMS
 from tests.fixtures import at_time, make_obs, with_self
 from tests.test_scenarios import _actor, _los_point, _origin, _quiet, _safe_zone
+
+
+@pytest.fixture(autouse=True)
+def _farmer_strategy(monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "farmer")
 
 
 def _debug(act) -> str:

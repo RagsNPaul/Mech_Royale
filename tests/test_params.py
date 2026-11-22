@@ -24,9 +24,9 @@ def test_mech_params_overrides_shallow():
     out = subprocess.check_output([sys.executable, "-c", code], cwd=ROOT, env=env, text=True)
     got = json.loads(out)
     assert got["base_margin"] == 2
-    assert got["strategy"] == "farmer"
+    assert got["strategy"] == "brawler"
     assert got["finish_hp"] == 800.0
-    assert got["standoff_lightning_m"] == 20.0
+    assert got["standoff_lightning_m"] == 120.0
     assert got["upgrade_priority"] == ["armor"]
 
 

@@ -57,7 +57,9 @@ def test_lightning_is_taken_over_a_closer_laser(hello):
     assert taken["drop"] == 1
 
 
-def test_clustered_enemy_is_preferred(hello):
+def test_clustered_enemy_is_preferred(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "standoff_lightning_m", 20.0)
+    monkeypatch.setitem(PARAMS, "standoff_gun_m", 20.0)
     brain = Brain(hello)
     origin = _origin(brain)
     isolated = _actor(5, [origin[0] + 50.0, origin[1] + 40.0, origin[2]], 100)
@@ -96,7 +98,10 @@ def test_lightning_fires_at_20m_inside_the_cone(hello):
     assert fired["fire"][1] is True
 
 
-def test_fight_does_not_boost(hello):
+def test_fight_does_not_boost(hello, monkeypatch):
+    """Inside 60 m is not enough. Boost only while backing out from standoff - 20."""
+    monkeypatch.setitem(PARAMS, "standoff_lightning_m", 50.0)
+    monkeypatch.setitem(PARAMS, "standoff_gun_m", 50.0)
     brain = Brain(hello)
     origin = _origin(brain)
     enemy = _actor(5, [origin[0] + 30.0, origin[1], origin[2]], 1400)
@@ -183,7 +188,9 @@ def test_steps_onto_a_close_cube_while_aiming_at_the_enemy(hello):
     assert abs(act["aim"][0]) < 0.4
 
 
-def test_enemy_at_70m_is_rushed_instead_of_a_cube(hello):
+def test_enemy_at_70m_is_rushed_instead_of_a_cube(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "standoff_lightning_m", 20.0)
+    monkeypatch.setitem(PARAMS, "standoff_gun_m", 20.0)
     brain = Brain(hello)
     origin = _origin(brain)
     enemy = _actor(5, [origin[0] + 70.0, origin[1], origin[2]], 1400)
@@ -221,7 +228,44 @@ def test_far_enemy_is_aimed_while_walking_to_a_cube(hello):
     assert fired["fire"][0] is True
 
 
+def test_too_close_backs_away_with_boost(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "standoff_gun_m", 100.0)
+    monkeypatch.setitem(PARAMS, "standoff_lightning_m", 100.0)
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, [origin[0] + 50.0, origin[1], origin[2]], 1400)
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy]),
+    )
+    obs["self"]["energy"] = 80.0
+    act = brain.act(obs, time.perf_counter())
+    assert act["move"][0] < -0.3
+    assert act["boost"] is True
+    assert abs(act["aim"][0]) < 0.35
+
+
+def test_lightning_hunt_skips_once_an_enemy_is_known(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "standoff_lightning_m", 40.0)
+    monkeypatch.setitem(PARAMS, "standoff_gun_m", 40.0)
+    brain = Brain(hello)
+    origin = _origin(brain)
+    pickup = [origin[0] - 40.0, origin[1], origin[2]]
+    enemy = _actor(5, [origin[0] + 120.0, origin[1], origin[2]], 1400)
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "laser"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy], pickups=[{"id": 8021, "kind": "lightning", "pos": pickup}]),
+    )
+    act = brain.act(obs, time.perf_counter())
+    assert act["move"][0] > 0.3
+
+
 def test_standoff_distance_comes_from_params(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "standoff_gun_m", 20.0)
     monkeypatch.setitem(PARAMS, "standoff_lightning_m", 40.0)
     brain = Brain(hello)
     origin = _origin(brain)

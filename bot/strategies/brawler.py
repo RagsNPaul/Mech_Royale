@@ -30,6 +30,8 @@ _FIGHT_M = 60.0
 _FIGHT_ON_WAY_M = 40.0
 _CHAIN_M = 14.0
 _HOLD_M = 2.0
+_RETREAT_M = 20.0
+_BOOST_ENERGY = 30.0
 _LIGHTNING_ENERGY = 8.0
 _RESERVE = 9.0
 _REGEN_ENERGY = 15.0
@@ -74,9 +76,11 @@ def _choose(brain, obs, me, now: float) -> Intent:
         close = _within(brain, me, _FIGHT_ON_WAY_M)
         if close is not None:
             return _rush(brain, obs, me, close, now)
-        pickup = _lightning(obs, me)
-        if pickup is not None:
-            return _hunt(brain, obs, me, pickup)
+        # A lightning pickup must not walk us toward someone we already know about.
+        if _nearest_known(brain, me, math.inf) is None:
+            pickup = _lightning(obs, me)
+            if pickup is not None:
+                return _hunt(brain, obs, me, pickup)
     if target is not None:
         return _rush(brain, obs, me, target, now)
     return _search(brain, obs, me)
@@ -255,10 +259,15 @@ def _rush(brain, obs, me, target, now: float) -> Intent:
     tx, ty = float(target.pos[0]), float(target.pos[1])
     dist = math.hypot(tx - px, ty - py)
     hold = _standoff(brain, me)
+    boost = _boost(brain, obs, me)
     if dist > hold + _HOLD_M:
         move, jump = _toward(brain, obs, me, target.pos)
     elif dist < hold - _HOLD_M:
-        move, jump = _unit(px - tx, py - ty), False
+        move, jump = _retreat(brain, obs, me, target), False
+        if dist < hold - _RETREAT_M:
+            energy = me.get("energy")
+            if energy is not None and float(energy) > _BOOST_ENERGY:
+                boost = True
     else:
         move, jump = _strafe(px, py, tx, ty, now), False
     return Intent(
@@ -267,8 +276,34 @@ def _rush(brain, obs, me, target, now: float) -> Intent:
         jump=jump,
         aim_target=target,
         fire=_shots(brain, me, target, now),
-        boost=_boost(brain, obs, me),
+        boost=boost,
     )
+
+
+def _retreat(brain, obs, me, target) -> tuple[float, float]:
+    """Back up, favoring the next circle and a step away from everyone else."""
+    px, py = _xy(me["pos"])
+    tx, ty = float(target.pos[0]), float(target.pos[1])
+    ax, ay = _unit(px - tx, py - ty)
+    vx, vy = ax, ay
+    center = (obs.get("zone") or {}).get("next_center")
+    if center is not None:
+        cx, cy = _unit(float(center[0]) - px, float(center[1]) - py)
+        vx += cx
+        vy += cy
+    others = getattr(brain.world, "enemies", None)
+    if callable(others):
+        tid = getattr(target, "id", None)
+        for enemy in others():
+            if tid is not None and getattr(enemy, "id", None) == tid:
+                continue
+            ex, ey = _unit(px - float(enemy.pos[0]), py - float(enemy.pos[1]))
+            vx += ex
+            vy += ey
+    blended = _unit(vx, vy)
+    if ax * blended[0] + ay * blended[1] <= 0.0:
+        return ax, ay
+    return blended
 
 
 def _hunt(brain, obs, me, pickup) -> Intent:
@@ -383,7 +418,8 @@ def _kill_npc(brain, obs, me, npc, now: float) -> Intent:
     dist = math.hypot(tx - px, ty - py)
     target = SimpleNamespace(pos=(tx, ty, tz), vel=(0.0, 0.0, 0.0), id=npc.id)
     intent = Intent(reason="npc", aim_target=target, fire=(True, True), boost=False)
-    hold = _standoff(brain, me)
+    # Mech standoff stays long. A drone is closed on until the shot is comfortable.
+    hold = _LIGHTNING_M if "lightning" in _kinds(me) else _GUN_M
     if dist > hold + _HOLD_M:
         move, jump = _toward(brain, obs, me, npc.pos)
     else:
@@ -595,9 +631,11 @@ def _strafe(px: float, py: float, tx: float, ty: float, now: float) -> tuple[flo
 
 
 def _standoff(brain, me: dict) -> float:
-    if "lightning" in _kinds(me):
-        return _knob(brain, "standoff_lightning_m", _LIGHTNING_M)
-    return _knob(brain, "standoff_gun_m", _GUN_M)
+    """Gun range is the hold. Lightning may push that farther, never closer."""
+    gun = _knob(brain, "standoff_gun_m", _GUN_M)
+    if "lightning" not in _kinds(me):
+        return gun
+    return max(gun, _knob(brain, "standoff_lightning_m", _LIGHTNING_M))
 
 
 def _lightning(obs: dict, me: dict) -> dict | None:

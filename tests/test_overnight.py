@@ -27,12 +27,14 @@ import random
 def test_shipped_search_space_is_read_by_the_bot():
     space = json.loads(Path("tools/search_space.json").read_text(encoding="utf-8"))
     assert unread_keys(space) == []
-    assert set(space) == {"strategy", "cube_detour_m", "heal_hp_frac", "standoff_lightning_m"}
-    assert space["cube_detour_m"] == [40, 80, 120]
-    assert space["heal_hp_frac"] == [0.0, 0.5, 0.7]
+    assert set(space) == {
+        "strategy", "cube_detour_m", "heal_hp_frac", "standoff_lightning_m", "standoff_gun_m",
+    }
+    assert space["strategy"] == ["brawler"]
+    assert space["cube_detour_m"] == [0, 40, 80]
+    assert space["heal_hp_frac"] == [0.0, 0.4, 0.6]
     assert space["standoff_lightning_m"] == [15, 20, 30]
-    farmer = Path("bot/strategies/farmer.py").is_file()
-    assert space["strategy"] == (["brawler", "farmer"] if farmer else ["brawler"])
+    assert space["standoff_gun_m"] == [35, 45, 60]
 
 
 def test_unread_key_is_an_error(tmp_path, capsys):
@@ -61,7 +63,7 @@ def test_sample_always_includes_the_defaults():
     assert len(cands) == 8
     assert cands[0]["id"] == "baseline"
     assert cands[0]["params"]["strategy"] == PARAMS["strategy"]
-    assert cands[0]["params"]["standoff_lightning_m"] == pytest.approx(20.0)
+    assert cands[0]["params"]["standoff_lightning_m"] == pytest.approx(PARAMS["standoff_lightning_m"])
     assert cands[0]["params"]["cube_detour_m"] == pytest.approx(80.0)
     assert cands[0]["params"]["heal_hp_frac"] == pytest.approx(0.0)
     sigs = {json.dumps(c["params"], sort_keys=True, default=float) for c in cands}
