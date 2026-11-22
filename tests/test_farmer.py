@@ -18,6 +18,71 @@ def _dot(move, dx: float, dy: float) -> float:
     return float(move[0]) * dx + float(move[1]) * dy
 
 
+def _ang(a: float, b: float) -> float:
+    return abs(math.atan2(math.sin(a - b), math.cos(a - b)))
+
+
+def test_search_sweeps_aim_while_it_walks(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    aims = []
+    moved = []
+    for step in range(5):
+        obs = make_obs(
+            at_time(10.0 + step * 0.5),
+            with_self(hp=1400, pos=origin, cubes=0, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "gun"]),
+            _safe_zone(origin),
+            **_quiet(),
+        )
+        act = brain.act(obs, time.perf_counter())
+        aims.append(float(act["aim"][0]))
+        moved.append(math.hypot(act["move"][0], act["move"][1]) > 0.3)
+    assert all(moved)
+    assert max(aims) - min(aims) > 1.0
+
+
+def test_remembered_npc_stays_the_goal_out_of_view(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    npc_pos = _los_point(brain, origin, 90.0)
+    npc = _actor(101, npc_pos, 350)
+    npc["kind"] = "npc"
+    npc["max_hp"] = 350.0
+    seen = make_obs(
+        at_time(10.0),
+        with_self(hp=1400, pos=origin, cubes=0, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "gun"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[npc]),
+    )
+    brain.act(seen, time.perf_counter())
+    hidden = make_obs(
+        at_time(11.0),
+        with_self(hp=1400, pos=origin, cubes=0, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "gun"]),
+        _safe_zone(origin),
+        **_quiet(),
+    )
+    act = brain.act(hidden, time.perf_counter())
+    assert "| npc" in _debug(act)
+    assert _dot(act["move"], npc_pos[0] - origin[0], npc_pos[1] - origin[1]) > 0.0
+
+
+def test_npc_gun_sound_is_walked(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    point = _los_point(brain, origin, 100.0)
+    bearing = math.atan2(point[1] - origin[1], point[0] - origin[0])
+    obs = make_obs(
+        at_time(10.0),
+        with_self(hp=1400, pos=origin, cubes=0, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "gun"]),
+        _safe_zone(origin),
+        **_quiet(sounds=[{"kind": "npc_gun", "bearing": bearing, "dist": "mid", "age": 0.0}]),
+    )
+    act = brain.act(obs, time.perf_counter())
+    travel = math.atan2(act["move"][1], act["move"][0])
+    assert _ang(travel, bearing) < 0.4
+    assert "| sound" in _debug(act)
+
+
 def test_farms_the_npc_not_the_distant_mech(hello):
     brain = Brain(hello)
     origin = _origin(brain)

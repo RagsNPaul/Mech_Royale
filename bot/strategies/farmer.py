@@ -31,6 +31,14 @@ _HEAL_ENTER = 0.50
 _HEAL_EXIT = 0.85
 _QUIET_S = 2.0
 _HEAL_REACH_M = 40.0
+_SCAN_S = 1.2
+_SCAN_RAD = math.radians(150.0)
+_LEAD_NEAR_M = 60.0
+_LEAD_M = 100.0
+_CELL_M = 100.0
+_VISIT_M = 40.0
+_SWAP_M = 60.0
+_FORGET_M = 25.0
 _WEAPON_RANK = {"lightning": 0, "laser": 1, "mortar": 2}
 
 
@@ -54,10 +62,17 @@ def _farming(me: dict, now: float) -> bool:
 
 
 def _farm(brain, obs, me, now: float) -> Intent:
+    _remember(brain, obs, me, now)
+    _mark_visited(brain, me)
     foe = _must_fight(brain, obs, me)
     if foe is not None:
         return brawler._rush(brain, obs, me, foe, now)
-    pickup = _weapon_goal(obs, me)
+    swap = _lightning_swap(obs, me)
+    if swap is not None:
+        intent = brawler._hunt(brain, obs, me, swap)
+        intent.reason = "weapon"
+        return intent
+    pickup = _weapon_goal(brain, obs, me)
     if pickup is not None:
         intent = brawler._hunt(brain, obs, me, pickup)
         intent.reason = "weapon"
@@ -68,14 +83,20 @@ def _farm(brain, obs, me, now: float) -> Intent:
     npc = _farm_npc(brain, me)
     if npc is not None:
         return brawler._kill_npc(brain, obs, me, npc, now)
-    crate = _crate(obs, me)
+    crate = _remembered_crate(brain, me)
     if crate is not None:
         return _break_crate(brain, obs, me, crate)
     reach = brawler._knob(brain, "cube_detour_m", brawler._CUBE_FAR_M)
     cube = brawler._nearest_cube(obs, me, reach)
     if cube is not None:
         return brawler._walk_cube(brain, obs, me, cube["pos"], now)
-    return _toward_center(brain, obs, me)
+    lead = _sound_lead(brain, me)
+    if lead is not None:
+        return _scan(_walk_to(brain, obs, me, lead, "sound"), me, now)
+    cell = _explore_cell(brain, obs, me)
+    if cell is not None:
+        return _scan(_walk_to(brain, obs, me, cell, "explore"), me, now)
+    return _scan(_toward_center(brain, obs, me), me, now)
 
 
 def _hold(brain, obs, me, now: float) -> Intent:
@@ -113,13 +134,13 @@ def _must_fight(brain, obs, me):
     return None
 
 
-def _weapon_goal(obs, me) -> dict | None:
+def _weapon_goal(brain, obs, me) -> dict | None:
     have = _slot_kind(me, 1)
     have_rank = _WEAPON_RANK.get(have, 99)
     px, py = brawler._xy(me["pos"])
     best = None
     best_key = None
-    for pickup in obs.get("pickups") or []:
+    for pickup in _known_weapons(brain, obs):
         kind = str(pickup.get("kind") or "")
         rank = _WEAPON_RANK.get(kind)
         if rank is None or rank >= have_rank:
@@ -149,27 +170,14 @@ def _farm_npc(brain, me):
     px, py = brawler._xy(me["pos"])
     best = None
     best_dist = _NPC_M
-    for npc in brawler._npc_tracks(brain):
-        if npc.last_seen_t != brain.world.t:
+    for item in _mem(brain)["npc"].values():
+        dist = math.hypot(item["pos"][0] - px, item["pos"][1] - py)
+        if dist > best_dist:
             continue
-        dist = math.hypot(float(npc.pos[0]) - px, float(npc.pos[1]) - py)
-        if dist <= best_dist:
-            best, best_dist = npc, dist
-    return best
-
-
-def _crate(obs, me) -> dict | None:
-    px, py = brawler._xy(me["pos"])
-    best = None
-    best_dist = _CRATE_M
-    for crate in obs.get("crates") or []:
-        pos = crate.get("pos") if isinstance(crate, dict) else None
-        if not pos:
-            continue
-        dist = math.hypot(float(pos[0]) - px, float(pos[1]) - py)
-        if dist <= best_dist:
-            best, best_dist = crate, dist
-    return best
+        best, best_dist = item, dist
+    if best is None:
+        return None
+    return SimpleNamespace(id=best["id"], pos=best["pos"], hp=best.get("hp"), last_seen_t=best["last_seen"])
 
 
 def _break_crate(brain, obs, me, crate) -> Intent:
@@ -190,6 +198,213 @@ def _break_crate(brain, obs, me, crate) -> Intent:
     move, jump = brawler._toward(brain, obs, me, pos)
     intent.move_vec = move
     intent.jump = jump
+    return intent
+
+
+def _lightning_swap(obs, me) -> dict | None:
+    """A laser or mortar in slot 1 is dropped for a lightning we can see inside 60 m."""
+    if _slot_kind(me, 1) not in ("laser", "mortar"):
+        return None
+    px, py = brawler._xy(me["pos"])
+    best = None
+    best_dist = _SWAP_M
+    for pickup in obs.get("pickups") or []:
+        if str(pickup.get("kind") or "") != "lightning":
+            continue
+        pos = pickup.get("pos")
+        if not pos:
+            continue
+        dist = math.hypot(float(pos[0]) - px, float(pos[1]) - py)
+        if dist <= best_dist:
+            best, best_dist = pickup, dist
+    return best
+
+
+def _mem(brain) -> dict:
+    mem = getattr(brain, "_farmer_seen", None)
+    if mem is None:
+        mem = {"npc": {}, "crate": {}, "weapon": {}}
+        brain._farmer_seen = mem
+    return mem
+
+
+def _remember(brain, obs, me, now: float) -> None:
+    """Drones, crates, and weapon pickups stay a goal after they leave the wedge."""
+    mem = _mem(brain)
+    px, py = brawler._xy(me["pos"])
+    for event in obs.get("events") or []:
+        if event.get("type") == "kill" and event.get("target") is not None:
+            mem["npc"].pop(int(event["target"]), None)
+        if event.get("type") == "took" and event.get("id") is not None:
+            mem["weapon"].pop(int(event["id"]), None)
+    seen_npcs: set[int] = set()
+    for actor in obs.get("mechs") or []:
+        if str(actor.get("kind") or "") != "npc" or actor.get("id") is None:
+            continue
+        ident = int(actor["id"])
+        seen_npcs.add(ident)
+        pos = actor.get("pos") or (0.0, 0.0, 0.0)
+        mem["npc"][ident] = {
+            "id": ident,
+            "pos": (float(pos[0]), float(pos[1]), float(pos[2]) if len(pos) > 2 else 0.0),
+            "hp": None if actor.get("hp") is None else float(actor["hp"]),
+            "last_seen": now,
+        }
+    for ident, item in list(mem["npc"].items()):
+        if ident in seen_npcs:
+            continue
+        if math.hypot(item["pos"][0] - px, item["pos"][1] - py) <= _FORGET_M:
+            mem["npc"].pop(ident, None)
+    seen_crates: set[int] = set()
+    for crate in obs.get("crates") or []:
+        if not isinstance(crate, dict) or not crate.get("pos"):
+            continue
+        ident = int(crate["id"]) if crate.get("id") is not None else _pos_key(crate["pos"])
+        seen_crates.add(ident)
+        pos = crate["pos"]
+        mem["crate"][ident] = {
+            "id": crate.get("id"),
+            "pos": [float(pos[0]), float(pos[1]), float(pos[2]) if len(pos) > 2 else float(me["pos"][2])],
+            "hp": None if crate.get("hp") is None else float(crate["hp"]),
+            "last_seen": now,
+        }
+    for ident, item in list(mem["crate"].items()):
+        if ident in seen_crates:
+            continue
+        if math.hypot(item["pos"][0] - px, item["pos"][1] - py) <= 12.0:
+            mem["crate"].pop(ident, None)
+    seen_weapons: set[int] = set()
+    for pickup in obs.get("pickups") or []:
+        kind = str(pickup.get("kind") or "")
+        if kind not in _WEAPON_RANK or not pickup.get("pos") or pickup.get("id") is None:
+            continue
+        ident = int(pickup["id"])
+        seen_weapons.add(ident)
+        pos = pickup["pos"]
+        mem["weapon"][ident] = {
+            "id": ident,
+            "kind": kind,
+            "pos": [float(pos[0]), float(pos[1]), float(pos[2]) if len(pos) > 2 else float(me["pos"][2])],
+            "hp": None,
+            "last_seen": now,
+        }
+    reach = float(brain.rules.loot.pickup_radius)
+    for ident, item in list(mem["weapon"].items()):
+        if ident in seen_weapons:
+            continue
+        if math.hypot(item["pos"][0] - px, item["pos"][1] - py) <= reach:
+            mem["weapon"].pop(ident, None)
+
+
+def _pos_key(pos) -> int:
+    return (int(round(float(pos[0]))) << 20) ^ int(round(float(pos[1])))
+
+
+def _known_weapons(brain, obs) -> list:
+    found = [pickup for pickup in (obs.get("pickups") or []) if isinstance(pickup, dict)]
+    seen = {int(pickup["id"]) for pickup in found if pickup.get("id") is not None}
+    for item in _mem(brain)["weapon"].values():
+        if item["id"] in seen:
+            continue
+        found.append({"id": item["id"], "kind": item["kind"], "pos": item["pos"]})
+    return found
+
+
+def _remembered_crate(brain, me) -> dict | None:
+    px, py = brawler._xy(me["pos"])
+    best = None
+    best_dist = _CRATE_M
+    for item in _mem(brain)["crate"].values():
+        dist = math.hypot(item["pos"][0] - px, item["pos"][1] - py)
+        if dist <= best_dist:
+            best, best_dist = item, dist
+    if best is None:
+        return None
+    return {"id": best["id"], "pos": best["pos"]}
+
+
+def _sound_lead(brain, me):
+    hints = [hint for hint in brain.world.sounds if hint.kind in ("npc_gun", "crate")]
+    if not hints:
+        return None
+    hint = max(hints, key=lambda item: item.t)
+    dist = _LEAD_NEAR_M if hint.dist_bucket == "near" else _LEAD_M
+    px, py = brawler._xy(me["pos"])
+    return (px + math.cos(hint.bearing) * dist, py + math.sin(hint.bearing) * dist)
+
+
+def _visited(brain) -> set:
+    cells = getattr(brain, "_farmer_visited", None)
+    if cells is None:
+        cells = set()
+        brain._farmer_visited = cells
+    return cells
+
+
+def _mark_visited(brain, me) -> None:
+    px, py = brawler._xy(me["pos"])
+    cells = _visited(brain)
+    gx = math.floor(px / _CELL_M)
+    gy = math.floor(py / _CELL_M)
+    for ix in range(gx - 1, gx + 2):
+        for iy in range(gy - 1, gy + 2):
+            cx = (ix + 0.5) * _CELL_M
+            cy = (iy + 0.5) * _CELL_M
+            if math.hypot(cx - px, cy - py) <= _VISIT_M:
+                cells.add((ix, iy))
+
+
+def _explore_cell(brain, obs, me):
+    zone = obs.get("zone") or {}
+    center = zone.get("next_center")
+    radius = float(zone.get("next_radius") or 0.0)
+    if not center or radius <= 0.0:
+        return None
+    zx, zy = float(center[0]), float(center[1])
+    px, py = brawler._xy(me["pos"])
+    visited = _visited(brain)
+    gx = math.floor(px / _CELL_M)
+    gy = math.floor(py / _CELL_M)
+    span = min(int(radius / _CELL_M) + 2, 30)
+    best = None
+    best_dist = math.inf
+    for ix in range(gx - span, gx + span + 1):
+        for iy in range(gy - span, gy + span + 1):
+            if (ix, iy) in visited:
+                continue
+            cx = (ix + 0.5) * _CELL_M
+            cy = (iy + 0.5) * _CELL_M
+            if math.hypot(cx - zx, cy - zy) > radius:
+                continue
+            dist = math.hypot(cx - px, cy - py)
+            if dist < best_dist:
+                best, best_dist = (cx, cy), dist
+    return best
+
+
+def _walk_to(brain, obs, me, pos, reason: str) -> Intent:
+    move, jump = brawler._toward(brain, obs, me, pos)
+    return Intent(
+        reason=reason,
+        move_vec=move,
+        jump=jump,
+        fire=(False, False),
+        boost=brawler._boost(brain, obs, me),
+    )
+
+
+def _scan(intent: Intent, me, now: float) -> Intent:
+    """Sweep the 120° wedge ±150° around the way the legs are walking."""
+    move = intent.move_vec or (0.0, 0.0)
+    if math.hypot(float(move[0]), float(move[1])) > 0.2:
+        travel = math.atan2(float(move[1]), float(move[0]))
+    else:
+        aim = me.get("aim") or (0.0, 0.0)
+        travel = float(aim[0])
+    side = 1.0 if int(math.floor(now / _SCAN_S)) % 2 == 0 else -1.0
+    yaw = travel + side * _SCAN_RAD
+    intent.aim_target = None
+    intent.aim_yaw_pitch = (math.atan2(math.sin(yaw), math.cos(yaw)), 0.0)
     return intent
 
 
