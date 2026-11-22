@@ -8,6 +8,7 @@ import jsonschema
 import numpy as np
 
 from bot.brain import Brain
+from bot.params import PARAMS
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,7 +24,8 @@ def _validator():
     )
 
 
-def test_replay_stays_inside_the_budget(hello, observations):
+def test_replay_stays_inside_the_budget(hello, observations, monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "roof")
     brain = Brain(hello)
     validator = _validator()
     times = []
@@ -36,7 +38,8 @@ def test_replay_stays_inside_the_budget(hello, observations):
     assert float(np.percentile(times, 99)) < 0.015
 
 
-def test_replay_max_decision_under_20ms(hello, observations):
+def test_replay_max_decision_under_20ms(hello, observations, monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "roof")
     brain = Brain(hello)
     worst = 0.0
     for obs in observations:

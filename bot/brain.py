@@ -126,6 +126,10 @@ class Brain:
                 _nav._jump_tables(self.map)
             except Exception as exc:
                 print(f"path cache warm failed ({exc})", file=sys.stderr)
+        try:
+            roof.warm(self)
+        except Exception as exc:
+            print(f"roof catalog warm failed ({exc})", file=sys.stderr)
         self.control = Controller(self.rules, self.params, seed=int(hello.get("seed") or 0))
         self.target = None
         self.fight_reason = ""

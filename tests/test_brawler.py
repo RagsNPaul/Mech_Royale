@@ -22,7 +22,8 @@ def test_brawler_replay_is_fast_and_schema_valid(hello, observations, monkeypatc
     assert worst < 0.020
 
 
-def test_lightning_is_taken_over_a_closer_laser(hello):
+def test_lightning_is_taken_over_a_closer_laser(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "brawler")
     brain = Brain(hello)
     origin = _origin(brain)
     laser = [origin[0] + 8.0, origin[1], origin[2]]
@@ -49,7 +50,8 @@ def test_lightning_is_taken_over_a_closer_laser(hello):
     assert taken["drop"] == 1
 
 
-def test_clustered_enemy_is_preferred(hello):
+def test_clustered_enemy_is_preferred(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "brawler")
     brain = Brain(hello)
     origin = _origin(brain)
     isolated = _actor(5, [origin[0] + 50.0, origin[1] + 40.0, origin[2]], 100)
@@ -69,7 +71,8 @@ def test_clustered_enemy_is_preferred(hello):
     assert low_dot > isolated_dot
 
 
-def test_lightning_fires_at_20m_inside_the_cone(hello):
+def test_lightning_fires_at_20m_inside_the_cone(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "brawler")
     brain = Brain(hello)
     origin = _origin(brain)
     enemy = _actor(5, [origin[0] + 20.0, origin[1], origin[2]], 1400)
@@ -88,7 +91,8 @@ def test_lightning_fires_at_20m_inside_the_cone(hello):
     assert fired["fire"][1] is True
 
 
-def test_fight_does_not_boost(hello):
+def test_fight_does_not_boost(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "brawler")
     brain = Brain(hello)
     origin = _origin(brain)
     enemy = _actor(5, [origin[0] + 30.0, origin[1], origin[2]], 1400)
@@ -103,7 +107,8 @@ def test_fight_does_not_boost(hello):
     assert act["boost"] is False
 
 
-def test_low_energy_holds_lightning_and_keeps_the_gun(hello):
+def test_low_energy_holds_lightning_and_keeps_the_gun(hello, monkeypatch):
+    monkeypatch.setitem(PARAMS, "strategy", "brawler")
     brain = Brain(hello)
     origin = _origin(brain)
     enemy = _actor(5, [origin[0] + 35.0, origin[1], origin[2]], 1400)
