@@ -26,7 +26,7 @@ from bot.control import Controller, Intent
 from bot.mapdata import load as load_map
 from bot.modes import disengage, drop, fight, hide, loot, zone
 from bot.nav import Navigator, astar, best_cover, time_to_reach
-from bot.strategies import brawler
+from bot.strategies import brawler, roof
 from bot.params import PARAMS
 from bot.threat import pick_target, should_fight, zone_safe_s
 from bot.world import WorldModel
@@ -143,12 +143,14 @@ class Brain:
         offer = obs.get("offer")
         self._offer = None if not offer else int(upgrades.choose(offer, obs["self"], self.rules, self.params))
         now = float(obs.get("t") or 0.0)
-        if str(self.params.get("strategy") or "brain") == "brawler":
-            intent = brawler.run(self, obs)
+        strategy = str(self.params.get("strategy") or "brain")
+        if strategy in ("brawler", "roof"):
+            runner = roof.run if strategy == "roof" else brawler.run
+            intent = runner(self, obs)
             if not isinstance(intent, Intent):
                 intent = Intent(slow=True, reason="idle")
-            self.mode = "BRAWL"
-            intent.mode = "BRAWL"
+            self.mode = "ROOF" if strategy == "roof" else "BRAWL"
+            intent.mode = self.mode
             if self._offer is not None:
                 intent.pick = self._offer
             nav = None if self.map is None else self.nav
