@@ -1,5 +1,6 @@
-"""Upgrade picks follow the effect scores in hello.config.upgrades."""
+"""Upgrade picks follow PARAMS['upgrade_priority']."""
 
+from bot.params import PARAMS
 from bot.upgrades import choose
 
 
@@ -9,6 +10,11 @@ def _offer(*ids: str) -> dict:
 
 def _me(*kinds: str) -> dict:
     return {"weapons": list(kinds)}
+
+
+def test_lightning_chain_beats_armor_and_sensors(rules):
+    picked = choose(_offer("armor", "lightning_chain", "sensors"), _me("gun"), rules, PARAMS)
+    assert picked == 1
 
 
 def test_held_weapon_rate_beats_armor_and_sensors(rules):

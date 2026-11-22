@@ -14,16 +14,21 @@ from bot.control import Intent
 from bot.threat import zone_safe_s
 
 _ZONE_S = 8.0
+_BOOST_ZONE_S = 10.0
 _LIGHTNING_M = 20.0
 _GUN_M = 45.0
 _RING_M = 15.0
 _HUNT_M = 150.0
 _CRATE_M = 40.0
+_FIGHT_M = 60.0
 _FIGHT_ON_WAY_M = 40.0
 _CHAIN_M = 14.0
 _HOLD_M = 2.0
 _LIGHTNING_ENERGY = 8.0
-_BOOST_ENERGY = 25.0
+_RESERVE = 9.0
+_REGEN_ENERGY = 15.0
+_REGEN_DIST = 25.0
+_REGEN_HOLD_S = 1.0
 
 
 def run(brain, obs) -> Intent:
@@ -66,8 +71,8 @@ def _rush(brain, obs, me, target, now: float) -> Intent:
         move_vec=move,
         jump=jump,
         aim_target=target,
-        fire=_triggers(me),
-        boost=_can_boost(me),
+        fire=_shots(brain, me, target, now),
+        boost=_boost(brain, obs, me),
     )
 
 
@@ -94,16 +99,18 @@ def _hunt(brain, obs, me, pickup) -> Intent:
     move, jump = _toward(brain, obs, me, pos)
     intent.move_vec = move
     intent.jump = jump
+    intent.boost = _boost(brain, obs, me)
     return intent
 
 
 def _zone(brain, obs, me, target) -> Intent:
+    now = float(obs.get("t") or 0.0)
     goal = brain.ring_point(obs, _RING_M)
     move, jump = _toward(brain, obs, me, goal)
-    intent = Intent(reason="zone", move_vec=move, jump=jump, boost=me.get("in_zone") is False)
+    intent = Intent(reason="zone", move_vec=move, jump=jump, boost=_boost(brain, obs, me))
     if target is not None:
         intent.aim_target = target
-        intent.fire = (True, True)
+        intent.fire = _shots(brain, me, target, now)
         return intent
     px, py = _xy(me["pos"])
     intent.aim_yaw_pitch = (math.atan2(goal[1] - py, goal[0] - px), 0.0)
@@ -119,6 +126,7 @@ def _search(brain, obs, me) -> Intent:
             move_vec=(math.cos(bearing), math.sin(bearing)),
             aim_yaw_pitch=(bearing, 0.0),
             fire=(False, False),
+            boost=_boost(brain, obs, me),
         )
     zone = obs.get("zone") or {}
     center = zone.get("next_center")
@@ -133,6 +141,7 @@ def _search(brain, obs, me) -> Intent:
         jump=jump,
         aim_yaw_pitch=(math.atan2(goal[1] - py, goal[0] - px), 0.0),
         fire=(False, False),
+        boost=_boost(brain, obs, me),
     )
 
 
@@ -267,9 +276,60 @@ def _triggers(me: dict) -> tuple[bool, bool]:
     return True, lightning and "lightning" in _kinds(me)
 
 
-def _can_boost(me: dict) -> bool:
+def _shots(brain, me: dict, target, now: float) -> tuple[bool, bool]:
+    """Gun stays up. Lightning only inside range and the cone, above the reserve."""
+    return True, _lightning_ready(brain, me, target, now)
+
+
+def _lightning_ready(brain, me: dict, target, now: float) -> bool:
+    if target is None or "lightning" not in _kinds(me):
+        return False
+    px, py = _xy(me["pos"])
+    tx, ty = float(target.pos[0]), float(target.pos[1])
+    dist = math.hypot(tx - px, ty - py)
+    weapon = brain.rules.weapons["lightning"]
+    if dist > float(weapon.range):
+        return False
+    cone = math.radians(float(weapon.cone_deg))
+    bearing = math.atan2(ty - py, tx - px)
+    aim = me.get("aim") or [0.0, 0.0]
+    if abs(math.atan2(math.sin(bearing - float(aim[0])), math.cos(bearing - float(aim[0])))) > cone:
+        return False
     energy = me.get("energy")
-    return energy is None or float(energy) >= _BOOST_ENERGY
+    cost = float(weapon.energy)
+    if energy is not None and float(energy) - cost < _RESERVE:
+        return False
+    if _regen_pause(brain, energy, dist, now):
+        return False
+    return True
+
+
+def _regen_pause(brain, energy, dist: float, now: float) -> bool:
+    """Hold lightning long enough for regen to start, then let it fire again."""
+    delay = float(brain.rules.mech.energy_regen_delay)
+    hold = _REGEN_HOLD_S if _REGEN_HOLD_S >= delay else delay
+    until = getattr(brain, "_brawl_lightning_until", None)
+    if until is not None and now < float(until):
+        return True
+    if until is not None:
+        brain._brawl_lightning_until = None
+        brain._brawl_lightning_resumed = True
+    low_far = energy is not None and float(energy) < _REGEN_ENERGY and dist > _REGEN_DIST
+    if not low_far:
+        brain._brawl_lightning_resumed = False
+        return False
+    if getattr(brain, "_brawl_lightning_resumed", False):
+        return False
+    brain._brawl_lightning_until = now + hold
+    return True
+
+
+def _boost(brain, obs, me: dict) -> bool:
+    """No boost inside 60 m. Outside a fight, boost only to stay in the circle."""
+    if _within(brain, me, _FIGHT_M) is not None:
+        return False
+    safe = zone_safe_s(me, obs)
+    return not math.isinf(safe) and safe <= _BOOST_ZONE_S
 
 
 def _kinds(me: dict) -> set[str]:

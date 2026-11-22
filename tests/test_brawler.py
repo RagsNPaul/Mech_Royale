@@ -86,3 +86,39 @@ def test_lightning_fires_at_20m_inside_the_cone(hello):
     fired = brain.act(obs, time.perf_counter())
     assert fired["fire"][0] is True
     assert fired["fire"][1] is True
+
+
+def test_fight_does_not_boost(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, [origin[0] + 30.0, origin[1], origin[2]], 1400)
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy]),
+    )
+    obs["self"]["energy"] = 100.0
+    act = brain.act(obs, time.perf_counter())
+    assert act["boost"] is False
+
+
+def test_low_energy_holds_lightning_and_keeps_the_gun(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, [origin[0] + 35.0, origin[1], origin[2]], 1400)
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy]),
+    )
+    obs["self"]["energy"] = 12.0
+    aimed = brain.act(obs, time.perf_counter())
+    obs["self"]["aim"] = list(aimed["aim"])
+    obs["self"]["energy"] = 12.0
+    obs["t"] = 50.1
+    obs["tick"] = int(round(obs["t"] * 20))
+    fired = brain.act(obs, time.perf_counter())
+    assert fired["fire"][0] is True
+    assert fired["fire"][1] is False

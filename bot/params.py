@@ -40,13 +40,20 @@ PARAMS = {
 
     # --- upgrades (priority order; unknown ids fall to the end) ---
     "upgrade_priority": [
+        "lightning_efficiency",
+        "lightning_chain",
+        "capacitor",
+        "reactor",
+        "plating",
+        "lightning_range",
+        "nanites",
         "gun_rate",
         "gun_damage",
-        "laser_damage",
-        "lightning_efficiency",
-        "mortar_reload",
-        "laser_charge",
         "armor",
+        "gun_mag",
+        "jets",
+        "gyros",
+        "servos",
         "sensors",
     ],
 }
