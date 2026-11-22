@@ -3,8 +3,17 @@
 import math
 import time
 
+import pytest
+
 from bot.brain import Brain
+from bot.params import PARAMS
 from tests.fixtures import at_time, make_obs, with_self, with_zone
+
+
+@pytest.fixture(autouse=True)
+def _state_machine(monkeypatch):
+    """These tests cover the mode loop. The shipped strategy is the brawler."""
+    monkeypatch.setitem(PARAMS, "strategy", "brain")
 
 
 def _origin(brain) -> list[float]:

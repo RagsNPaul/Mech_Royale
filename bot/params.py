@@ -35,6 +35,9 @@ PARAMS = {
     "plan_budget_ms": 30.0,      # skip path replans past this elapsed time
     "replan_every_s": 1.0,
 
+    # --- which decision loop Brain.act runs ---
+    "strategy": "brawler",
+
     # --- upgrades (priority order; unknown ids fall to the end) ---
     "upgrade_priority": [
         "gun_rate",
