@@ -29,10 +29,10 @@ _RESERVE = 9.0
 _REGEN_ENERGY = 15.0
 _REGEN_DIST = 25.0
 _REGEN_HOLD_S = 1.0
-_CUBE_CLEAR_M = 40.0
+_CUBE_CLEAR_M = 120.0
 _CUBE_FAR_M = 80.0
 _CUBE_FIGHT_M = 12.0
-_DROP_ENEMY_M = 30.0
+_DROP_VISIBLE_M = 80.0
 _DROP_S = 10.0
 _HP_GRAB = 0.50
 
@@ -47,7 +47,7 @@ def run(brain, obs) -> Intent:
     cube = _cube_move(brain, obs, me, now)
     if cube is not None:
         return cube
-    drop = _drop_move(brain, obs, me)
+    drop = _drop_move(brain, obs, me, now)
     if drop is not None:
         return drop
     if not _slot1_lightning(me):
@@ -63,14 +63,13 @@ def run(brain, obs) -> Intent:
 
 
 def _cube_move(brain, obs, me, now: float) -> Intent | None:
-    """No one close: detour up to 80 m. In a fight, only step onto a cube at our feet."""
+    """Detour up to 80 m only when nobody is known inside 120 m. Otherwise only a cube at our feet."""
     px, py = _xy(me["pos"])
-    close = _within(brain, me, _CUBE_CLEAR_M)
-    if close is None:
+    if _nearest_known(brain, me, _CUBE_CLEAR_M) is None:
         cube = _nearest_cube(obs, me, _CUBE_FAR_M)
         if cube is None:
             return None
-        return _walk_cube(brain, obs, me, cube["pos"])
+        return _walk_cube(brain, obs, me, cube["pos"], now)
     cube = _nearest_cube(obs, me, _CUBE_FIGHT_M)
     if cube is None or not _winning(me):
         return None
@@ -78,30 +77,31 @@ def _cube_move(brain, obs, me, now: float) -> Intent | None:
     move, jump = _toward(brain, obs, me, pos)
     if math.hypot(float(pos[0]) - px, float(pos[1]) - py) <= float(brain.rules.cubes.pickup_radius):
         move, jump = (0.0, 0.0), False
-    return Intent(
+    intent = Intent(
         reason="cube",
         move_vec=move,
         jump=jump,
         slow=move == (0.0, 0.0),
-        aim_target=close,
-        fire=_shots(brain, me, close, now),
         boost=_boost(brain, obs, me),
     )
+    return _face(intent, brain, me, now)
 
 
-def _walk_cube(brain, obs, me, pos) -> Intent:
+def _walk_cube(brain, obs, me, pos, now: float) -> Intent:
     px, py = _xy(me["pos"])
     tx, ty = float(pos[0]), float(pos[1])
     dist = math.hypot(tx - px, ty - py)
     if dist <= float(brain.rules.cubes.pickup_radius):
-        return Intent(reason="cube", move_vec=(0.0, 0.0), slow=True, fire=(False, False))
-    move, jump = _toward(brain, obs, me, pos)
-    return Intent(reason="cube", move_vec=move, jump=jump, boost=_boost(brain, obs, me), fire=(False, False))
+        intent = Intent(reason="cube", move_vec=(0.0, 0.0), slow=True)
+    else:
+        move, jump = _toward(brain, obs, me, pos)
+        intent = Intent(reason="cube", move_vec=move, jump=jump, boost=_boost(brain, obs, me))
+    return _face(intent, brain, me, now)
 
 
-def _drop_move(brain, obs, me) -> Intent | None:
-    """A kill's cubes land on the body. Walk there unless someone is already close."""
-    if _within(brain, me, _DROP_ENEMY_M) is not None:
+def _drop_move(brain, obs, me, now: float) -> Intent | None:
+    """A kill's cubes land on the body. Skip the walk when someone is in sight inside 80 m."""
+    if _visible_within(brain, me, _DROP_VISIBLE_M) is not None:
         return None
     drops = getattr(brain, "_cube_drops", ())
     if not drops:
@@ -110,20 +110,31 @@ def _drop_move(brain, obs, me) -> Intent | None:
     pos = min(drops, key=lambda item: math.hypot(item[1][0] - px, item[1][1] - py))[1]
     weapon = _dropped_weapon(obs, me, pos)
     dist = math.hypot(pos[0] - px, pos[1] - py)
-    intent = Intent(reason="drop", fire=(False, False), boost=_boost(brain, obs, me))
+    intent = Intent(reason="drop", boost=_boost(brain, obs, me))
     if weapon is not None and dist <= float(brain.rules.loot.pickup_radius):
         intent.take = int(weapon["id"])
         intent.drop = _swap_slot(me)
         intent.move_vec = (0.0, 0.0)
         intent.slow = True
-        return intent
+        return _face(intent, brain, me, now)
     if dist <= float(brain.rules.cubes.pickup_radius):
         intent.move_vec = (0.0, 0.0)
         intent.slow = True
-        return intent
+        return _face(intent, brain, me, now)
     move, jump = _toward(brain, obs, me, pos)
     intent.move_vec = move
     intent.jump = jump
+    return _face(intent, brain, me, now)
+
+
+def _face(intent: Intent, brain, me, now: float) -> Intent:
+    """Keep the guns on the nearest known enemy while the legs go for the cube."""
+    foe = _nearest_known(brain, me, math.inf)
+    if foe is None:
+        intent.fire = (False, False)
+        return intent
+    intent.aim_target = foe
+    intent.fire = _shots(brain, me, foe, now)
     return intent
 
 
@@ -372,6 +383,32 @@ def _within(brain, me: dict, radius: float):
     best = None
     best_dist = radius
     for enemy in enemies():
+        dist = math.hypot(enemy.pos[0] - px, enemy.pos[1] - py)
+        if dist <= best_dist:
+            best, best_dist = enemy, dist
+    return best
+
+
+def _nearest_known(brain, me: dict, radius: float):
+    """Nearest visible or remembered enemy inside `radius`."""
+    px, py = _xy(me["pos"])
+    enemies = getattr(brain.world, "enemies", None)
+    if not callable(enemies):
+        return None
+    best = None
+    best_dist = radius
+    for enemy in enemies():
+        dist = math.hypot(enemy.pos[0] - px, enemy.pos[1] - py)
+        if dist <= best_dist:
+            best, best_dist = enemy, dist
+    return best
+
+
+def _visible_within(brain, me: dict, radius: float):
+    px, py = _xy(me["pos"])
+    best = None
+    best_dist = radius
+    for enemy in _visible(brain):
         dist = math.hypot(enemy.pos[0] - px, enemy.pos[1] - py)
         if dist <= best_dist:
             best, best_dist = enemy, dist

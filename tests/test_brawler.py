@@ -1,5 +1,6 @@
 """The brawler over the recorded match: valid actions, no exceptions, under 20 ms."""
 
+import math
 import time
 
 from bot.brain import Brain
@@ -173,3 +174,41 @@ def test_steps_onto_a_close_cube_while_aiming_at_the_enemy(hello):
     act = brain.act(obs, time.perf_counter())
     assert act["move"][1] > 0.5
     assert abs(act["aim"][0]) < 0.4
+
+
+def test_enemy_at_70m_is_rushed_instead_of_a_cube(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, [origin[0] + 70.0, origin[1], origin[2]], 1400)
+    cube = [origin[0], origin[1] + 30.0, origin[2]]
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy], cubes=[{"id": 5014, "pos": cube}]),
+    )
+    act = brain.act(obs, time.perf_counter())
+    assert act["move"][0] > 0.5
+    assert act["move"][0] > abs(act["move"][1])
+
+
+def test_far_enemy_is_aimed_while_walking_to_a_cube(hello):
+    brain = Brain(hello)
+    origin = _origin(brain)
+    enemy = _actor(5, [origin[0], origin[1] + 150.0, origin[2]], 1400)
+    cube = [origin[0] + 30.0, origin[1], origin[2]]
+    obs = make_obs(
+        at_time(50.0),
+        with_self(hp=1400, pos=origin, in_zone=True, aim=[0.0, 0.0], weapons=["gun", "lightning"]),
+        _safe_zone(origin),
+        **_quiet(mechs=[enemy], cubes=[{"id": 5015, "pos": cube}]),
+    )
+    aimed = brain.act(obs, time.perf_counter())
+    assert aimed["move"][0] > 0.5
+    assert abs(aimed["aim"][0] - math.pi / 2.0) < 0.4
+    obs["self"]["aim"] = list(aimed["aim"])
+    obs["t"] = 50.1
+    obs["tick"] = int(round(obs["t"] * 20))
+    fired = brain.act(obs, time.perf_counter())
+    assert fired["move"][0] > 0.5
+    assert fired["fire"][0] is True
