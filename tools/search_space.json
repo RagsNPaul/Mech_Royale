@@ -1,6 +1,7 @@
 {
-  "strategy": ["brawler", "farmer"],
-  "cube_detour_m": [40, 80, 120],
-  "heal_hp_frac": [0.0, 0.5, 0.7],
-  "standoff_lightning_m": [15, 20, 30]
+  "strategy": ["brawler"],
+  "standoff_lightning_m": [15, 20, 30],
+  "standoff_gun_m": [35, 45, 60],
+  "cube_detour_m": [0, 40, 80],
+  "heal_hp_frac": [0.0, 0.4, 0.6]
 }
